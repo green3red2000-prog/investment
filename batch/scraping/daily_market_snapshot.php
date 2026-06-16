@@ -28,11 +28,79 @@ const JOB_NAME = '本日の株価動向';
 // 実行単位でプロキシ固定（403回避に重要）
 http_session_begin(true);
 
-// 取得間隔（GAS 1200ms相当）
-const INTERVAL_US = 1200000;
-
 // 主要URL
 const URL_TRADE_VALUE = 'https://kabutan.jp/warning/trading_value_ranking';
+
+const SNAPSHOT_ROOT = '/opt/invest/scraping/data';
+
+const URL_FILE_MAP = [
+
+  'https://kabutan.jp/warning/trading_value_ranking'
+    => '01_market_01_trading_value_ranking.html',
+
+  'https://kabutan.jp/warning/volume_ranking'
+    => '01_market_02_volume_ranking.html',
+
+  'https://kabutan.jp/warning/?mode=2_1'
+    => '01_market_03_today_price_rise.html',
+
+  'https://kabutan.jp/warning/?mode=2_2'
+    => '01_market_04_today_price_fall.html',
+
+  'https://kabutan.jp/warning/?mode=3_1'
+    => '01_market_05_stop_high.html',
+
+  'https://kabutan.jp/warning/?mode=3_2'
+    => '01_market_06_stop_low.html',
+
+  'https://kabutan.jp/warning/record_w52_high_price?market=0&capitalization=-1&stc=code&stm=0&col=per'
+    => '01_market_07_52week_high.html',
+
+  'https://kabutan.jp/warning/record_w52_low_price?market=0&capitalization=-1&stc=code&stm=1&col=per'
+    => '01_market_08_52week_low.html',
+
+  'https://kabutan.jp/warning/?mode=3_3&market=0&capitalization=-1&stc=per&stm=0&col=per'
+    => '01_market_09_ytd_high.html',
+
+  'https://kabutan.jp/warning/?mode=3_4&market=0&capitalization=-1&stc=code&stm=1&col=per'
+    => '01_market_10_ytd_low.html',
+
+  'https://kabutan.jp/warning/?mode=11_11'
+    => '01_market_11_week_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_15'
+    => '01_market_12_month_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_19'
+    => '01_market_13_year_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_13'
+    => '01_market_14_past_week_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_17'
+    => '01_market_15_past_month_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_21'
+    => '01_market_16_past_year_rise.html',
+
+  'https://kabutan.jp/warning/?mode=11_12'
+    => '01_market_17_week_fall.html',
+
+  'https://kabutan.jp/warning/?mode=11_16'
+    => '01_market_18_month_fall.html',
+
+  'https://kabutan.jp/warning/?mode=11_20'
+    => '01_market_19_year_fall.html',
+
+  'https://kabutan.jp/warning/?mode=11_14'
+    => '01_market_20_past_week_fall.html',
+
+  'https://kabutan.jp/warning/?mode=11_18'
+    => '01_market_21_past_month_fall.html',
+
+  'https://kabutan.jp/warning/?mode=11_22'
+    => '01_market_22_past_year_fall.html',
+];
 
 // ====== テスト用オプション ======
 // 例:
@@ -55,6 +123,8 @@ function main(?string $targetYmd = null, bool $force = false): void {
   $todayYmd   = $dt->format('Y-m-d');
   $todayJp    = $dt->format('Y年m月d日');
   $todaySlash = $dt->format('Y/m/d');
+  
+  $GLOBALS['SNAPSHOT_DATE'] = $dt->format('Ymd');
 
   echo "=== 開始: " . JOB_NAME . " ===\n";
   echo "今日: {$todayJp} ({$todayYmd})\n";
@@ -98,7 +168,6 @@ function main(?string $targetYmd = null, bool $force = false): void {
   // ========= 出力順 =========
 
   // 1) 売買代金（上位20）
-  usleep(INTERVAL_US);
   {
     $html = http_get_warning_html_with_page2_(URL_TRADE_VALUE);
     $list = parse_stock_table_rows_multi_($html);
@@ -117,7 +186,6 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 2) 出来高（株価>=100）上位20
-  usleep(INTERVAL_US);
   {
     $url = 'https://kabutan.jp/warning/volume_ranking';
     $html = http_get_warning_html_with_page2_($url);
@@ -144,15 +212,12 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 3) 今日の株価上昇率（上位20）
-  usleep(INTERVAL_US);
   push_today_change_($rows, '今日の株価上昇率', 'https://kabutan.jp/warning/?mode=2_1');
 
   // 4) 今日の株価下落率（上位20）
-  usleep(INTERVAL_US);
   push_today_change_($rows, '今日の株価下落率', 'https://kabutan.jp/warning/?mode=2_2');
 
   // 5) 本日のストップ高（全件） + 件数
-  usleep(INTERVAL_US);
   {
     $url = 'https://kabutan.jp/warning/?mode=3_1';
     $html = http_get_warning_html_with_page2_($url);
@@ -172,7 +237,6 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 6) 本日のストップ安（全件） + 件数
-  usleep(INTERVAL_US);
   {
     $url = 'https://kabutan.jp/warning/?mode=3_2';
     $html = http_get_warning_html_with_page2_($url);
@@ -192,9 +256,8 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 7) 本日、52週高値更新（全件） + 件数
-  usleep(INTERVAL_US);
   {
-    $url = 'https://kabutan.jp/warning/record_w52_high_price?&market=0&capitalization=-1&stc=code&stm=0&col=per';
+    $url = 'https://kabutan.jp/warning/record_w52_high_price?market=0&capitalization=-1&stc=code&stm=0&col=per';
     $html = http_get_warning_html_with_page2_($url);
     $cnt52wHigh = (int)(parse_meigara_count_($html)['count'] ?? 0);
     $list = parse_stock_table_rows_multi_($html);
@@ -212,9 +275,8 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 8) 本日、52週安値更新（全件） + 件数
-  usleep(INTERVAL_US);
   {
-    $url = 'https://kabutan.jp/warning/record_w52_low_price?&market=0&capitalization=-1&stc=code&stm=1&col=per';
+    $url = 'https://kabutan.jp/warning/record_w52_low_price?market=0&capitalization=-1&stc=code&stm=1&col=per';
     $html = http_get_warning_html_with_page2_($url);
     $cnt52wLow = (int)(parse_meigara_count_($html)['count'] ?? 0);
     $list = parse_stock_table_rows_multi_($html);
@@ -232,7 +294,6 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 9) 本日、年初来高値更新（全件） + 件数
-  usleep(INTERVAL_US);
   {
     $url = 'https://kabutan.jp/warning/?mode=3_3&market=0&capitalization=-1&stc=per&stm=0&col=per';
     $html = http_get_warning_html_with_page2_($url);
@@ -252,7 +313,6 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 10) 本日、年初来安値更新（全件） + 件数
-  usleep(INTERVAL_US);
   {
     $url = 'https://kabutan.jp/warning/?mode=3_4&market=0&capitalization=-1&stc=code&stm=1&col=per';
     $html = http_get_warning_html_with_page2_($url);
@@ -272,20 +332,20 @@ function main(?string $targetYmd = null, bool $force = false): void {
   }
 
   // 11)〜16) 上昇率（週/月/年/過去◯）
-  usleep(INTERVAL_US); add_period_change_($rows, '今週の株価上昇率',       'https://kabutan.jp/warning/?mode=11_11');
-  usleep(INTERVAL_US); add_period_change_($rows, '今月の株価上昇率',       'https://kabutan.jp/warning/?mode=11_15');
-  usleep(INTERVAL_US); add_period_change_($rows, '今年の株価上昇率',       'https://kabutan.jp/warning/?mode=11_19');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1週間の株価上昇率', 'https://kabutan.jp/warning/?mode=11_13');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1ヵ月の株価上昇率', 'https://kabutan.jp/warning/?mode=11_17');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1年の株価上昇率',   'https://kabutan.jp/warning/?mode=11_21');
+  add_period_change_($rows, '今週の株価上昇率',       'https://kabutan.jp/warning/?mode=11_11');
+  add_period_change_($rows, '今月の株価上昇率',       'https://kabutan.jp/warning/?mode=11_15');
+  add_period_change_($rows, '今年の株価上昇率',       'https://kabutan.jp/warning/?mode=11_19');
+  add_period_change_($rows, '過去1週間の株価上昇率', 'https://kabutan.jp/warning/?mode=11_13');
+  add_period_change_($rows, '過去1ヵ月の株価上昇率', 'https://kabutan.jp/warning/?mode=11_17');
+  add_period_change_($rows, '過去1年の株価上昇率',   'https://kabutan.jp/warning/?mode=11_21');
 
   // 17)〜22) 下落率（週/月/年/過去◯）
-  usleep(INTERVAL_US); add_period_change_($rows, '今週の株価下落率',       'https://kabutan.jp/warning/?mode=11_12');
-  usleep(INTERVAL_US); add_period_change_($rows, '今月の株価下落率',       'https://kabutan.jp/warning/?mode=11_16');
-  usleep(INTERVAL_US); add_period_change_($rows, '今年の株価下落率',       'https://kabutan.jp/warning/?mode=11_20');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1週間の株価下落率', 'https://kabutan.jp/warning/?mode=11_14');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1ヵ月の株価下落率', 'https://kabutan.jp/warning/?mode=11_18');
-  usleep(INTERVAL_US); add_period_change_($rows, '過去1年の株価下落率',   'https://kabutan.jp/warning/?mode=11_22');
+  add_period_change_($rows, '今週の株価下落率',       'https://kabutan.jp/warning/?mode=11_12');
+  add_period_change_($rows, '今月の株価下落率',       'https://kabutan.jp/warning/?mode=11_16');
+  add_period_change_($rows, '今年の株価下落率',       'https://kabutan.jp/warning/?mode=11_20');
+  add_period_change_($rows, '過去1週間の株価下落率', 'https://kabutan.jp/warning/?mode=11_14');
+  add_period_change_($rows, '過去1ヵ月の株価下落率', 'https://kabutan.jp/warning/?mode=11_18');
+  add_period_change_($rows, '過去1年の株価下落率',   'https://kabutan.jp/warning/?mode=11_22');
 
   // ====== 出力（CSV + メッセージTXT） ======
   $paths = build_output_paths(JOB_NAME, $todayYmd);
@@ -400,54 +460,40 @@ function add_period_change_(array &$rows, string $label, string $url): void {
   }
 }
 
-/**
- * warningページを取得し、最初のテーブル tbody<tr> が15件なら page=2 を連結して返す
- */
 function http_get_warning_html_with_page2_(string $url): string {
-  $html1 = http_get_text($url);
 
-  if (!is_kabutan_warning_($url)) {
-    return $html1;
+  if (!isset(URL_FILE_MAP[$url])) {
+    throw new RuntimeException(
+      "URL not mapped: {$url}"
+    );
   }
 
-  // 1ページ目の tr 数チェック
-  if (!preg_match('/<table[^>]*class="[^"]*\bstock_table\b[^"]*\bst_market\b[^"]*"[^>]*>([\s\S]*?)<\/table>/i', $html1, $m)) {
-    return $html1;
-  }
-  $tableInner = $m[1];
+  $snapshotDate =
+    $GLOBALS['SNAPSHOT_DATE']
+    ?? date('Ymd');
 
-  $tbody = '';
-  if (preg_match('/<tbody[^>]*>([\s\S]*?)<\/tbody>/i', $tableInner, $m2)) {
-    $tbody = $m2[1];
-  }
-  if ($tbody === '') return $html1;
+  $file =
+    SNAPSHOT_ROOT .
+    '/' .
+    $snapshotDate .
+    '/' .
+    URL_FILE_MAP[$url];
 
-  preg_match_all('/<tr[^>]*>/i', $tbody, $trs);
-  $trCount = is_array($trs[0]) ? count($trs[0]) : 0;
-
-  if ($trCount === 15) {
-    $url2 = with_page_param_($url, 2);
-    $html2 = http_get_text($url2);
-    if ($html2 !== '') {
-      return $html1 . "\n<!--PAGE2-->\n" . $html2;
-    }
+  if (!is_file($file)) {
+    throw new RuntimeException(
+      "snapshot file not found: {$file}"
+    );
   }
 
-  return $html1;
-}
+  $html = file_get_contents($file);
 
-function is_kabutan_warning_(string $url): bool {
-  return (bool)preg_match('#^https?://[^/]*kabutan\.jp/warning/#i', $url);
-}
-
-/**
- * page= を付与/置換
- */
-function with_page_param_(string $url, int $pageNum): string {
-  if (preg_match('/([?&])page=\d+/i', $url)) {
-    return preg_replace('/([?&])page=\d+/i', '$1page=' . $pageNum, $url);
+  if ($html === false) {
+    throw new RuntimeException(
+      "snapshot read failed: {$file}"
+    );
   }
-  return $url . (strpos($url, '?') !== false ? '&' : '?') . 'page=' . $pageNum;
+
+  return $html;
 }
 
 /**

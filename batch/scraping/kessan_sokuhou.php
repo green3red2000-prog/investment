@@ -3,24 +3,32 @@ declare(strict_types=1);
 
 /**
  * 決算速報（株探ニューススクレイピング PHP版）
- * - Webshare Proxy（lib側で複数持ち、毎回ランダム）
+ *
+ * - PowerShellで取得済みのHTMLを /opt/invest/scraping/data/yyyyMMdd から読み込む
  * - 出力: /opt/invest/scraping/tmp
  *   - 決算速報_yyyy-MM-dd.csv
  *   - 決算速報_メッセージ_yyyy-MM-dd.txt
  * - Driveへアップロード（CSVはGoogleスプレッドシート化）→ 成功後ローカル削除
+ *
+ * 起動例:
+ *
+ *   php kessan_sokuhou.php
+ *     → 前日を対象に実行
+ *
+ *   php kessan_sokuhou.php 2026-06-14
+ *     → 指定日を対象に実行
+ *
+ *   ※ --force はありません。指定した日付のHTMLフォルダを読み、その日付の記事だけを抽出します。
  */
 
 require __DIR__ . '/lib/scraping_common.php';
 
-http_session_begin(true);
-
 // ===== 設定項目 =====
 date_default_timezone_set('Asia/Tokyo');
 
-$JOB_NAME    = '決算速報';
-$TARGET_MMDD = '';                 // 空なら前日 (例: "05/24")
-$INTERVAL_US = 2500000;            // 2.5秒 (マイクロ秒)
-$MAX_PAGES   = 50;
+const JOB_NAME    = '決算速報';
+const MAX_PAGES     = 50;
+const SNAPSHOT_ROOT = '/opt/invest/scraping/data';
 
 $KEYWORDS = [
   "最高益","上方修正","下方修正","一転黒字","一転赤字",
@@ -29,11 +37,24 @@ $KEYWORDS = [
 ];
 
 // ===== 日付決定 =====
-$effectiveTarget = getEffectiveTargetMMDD($TARGET_MMDD);
-$targetISODate   = getEffectiveTargetISODate($TARGET_MMDD);
+$targetArg = $argv[1] ?? '';
+$targetArg = trim((string)$targetArg);
+
+if ($targetArg !== '') {
+  if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $targetArg)) {
+    fwrite(STDERR, "[ERROR] date must be YYYY-MM-DD. got: {$targetArg}\n");
+    exit(1);
+  }
+
+  $targetISODate = $targetArg;
+  $effectiveTarget = date('m/d', strtotime($targetISODate));
+} else {
+  $targetISODate = date('Y-m-d', strtotime('-1 day'));
+  $effectiveTarget = date('m/d', strtotime($targetISODate));
+}
 
 // 出力パス（共通関数）
-$paths   = build_output_paths($JOB_NAME, $targetISODate);
+$paths   = build_output_paths(JOB_NAME, $targetISODate);
 $csvPath = $paths['csv'];
 $txtPath = $paths['txt'];
 
@@ -46,22 +67,19 @@ $stop   = false;
 
 echo "対象日: {$effectiveTarget} の調査を開始します...\n";
 
-for ($page = 1; $page <= $MAX_PAGES && !$stop; $page++) {
+for ($page = 1; $page <= MAX_PAGES && !$stop; $page++) {
   echo "Page {$page} 取得中...\n";
   $url = $baseUrl . $page;
 
   try {
-    // Webshare proxy経由（ランダム選択 + 圧縮）
-    $html = http_get_text($url);
+    $html = readSnapshotHtml_($url, $targetISODate);
   } catch (Throwable $e) {
-    fwrite(STDERR, "[WARN] page={$page} fetch failed: {$e->getMessage()}\n");
-    usleep($INTERVAL_US);
-    continue;
+    fwrite(STDERR, "[WARN] snapshot read failed page={$page}: {$e->getMessage()}\n");
+    break;
   }
 
   // テーブル行らしき<tr>を拾う（start/end tagに依存しない）
   if (!preg_match_all('/<tr[\s\S]*?<\/tr>/i', $html, $trMatches)) {
-    usleep($INTERVAL_US);
     continue;
   }
 
@@ -122,7 +140,6 @@ for ($page = 1; $page <= $MAX_PAGES && !$stop; $page++) {
     }
   }
 
-  if (!$stop) usleep($INTERVAL_US);
 }
 
 // ===== CSV出力（tmp配下）=====
@@ -130,7 +147,7 @@ writeCsv($csvPath, $rows);
 
 // ===== メッセージTXT出力（tmp配下）=====
 $summaryLines = buildSummaryLines($counts); // ここで「ー」→「その他」
-$subjectLine  = "{$JOB_NAME}：{$effectiveTarget}";
+$subjectLine  = JOB_NAME . "：{$effectiveTarget}";
 $body =
   "決算サマリ：\n" .
   (count($summaryLines) ? implode("\n", $summaryLines) : "該当なし") .
@@ -143,25 +160,43 @@ echo "- {$csvPath}\n";
 echo "- {$txtPath}\n";
 
 // ===== Driveへアップロード → ローカル削除 =====
-upload_outputs_and_cleanup($JOB_NAME, $targetISODate, $csvPath, $txtPath);
+upload_outputs_and_cleanup(JOB_NAME, $targetISODate, $csvPath, $txtPath);
 
 // =====================
 // 関数群
 // =====================
+function readSnapshotHtml_(string $url, string $targetISODate): string {
+  $file = snapshotFilePath_($url, $targetISODate);
 
-function getEffectiveTargetMMDD(string $target): string {
-  $t = trim($target);
-  if ($t !== '') return $t;
-  return date('m/d', strtotime('-1 day'));
+  if (!is_file($file)) {
+    throw new RuntimeException("snapshot file not found: {$file}");
+  }
+
+  $html = file_get_contents($file);
+
+  if ($html === false) {
+    throw new RuntimeException("snapshot read failed: {$file}");
+  }
+
+  return $html;
 }
 
-function getEffectiveTargetISODate(string $targetMMDD): string {
-  $t = trim($targetMMDD);
-  if ($t !== '') {
-    [$m, $d] = explode('/', $t);
-    return date('Y') . '-' . sprintf('%02d-%02d', (int)$m, (int)$d);
+function snapshotFilePath_(string $url, string $targetISODate): string {
+  $snapshotDate = str_replace('-', '', $targetISODate);
+
+  if (!preg_match('/[?&]page=(\d+)/', $url, $m)) {
+    throw new RuntimeException("page parameter not found: {$url}");
   }
-  return date('Y-m-d', strtotime('-1 day'));
+
+  $page = (int)$m[1];
+
+  if ($page < 1 || $page > MAX_PAGES) {
+    throw new RuntimeException("page out of range: {$page}");
+  }
+
+  $fileName = sprintf('04_earnings_%02d_kabutan_news_page.html', $page);
+
+  return SNAPSHOT_ROOT . '/' . $snapshotDate . '/' . $fileName;
 }
 
 function toMMDD(string $iso): string {

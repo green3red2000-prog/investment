@@ -3,24 +3,29 @@ declare(strict_types=1);
 
 /**
  * PTS＆朝刊ニュース（PHP版）
- * - Webshare Proxy（lib側で複数持ち、毎回ランダム / 圧縮）
  * - 開始条件：
  *   「PTSナイトタイム上昇率」ページの <div class="meigara_count"> 最初の<li>＝日付 が本日(Asia/Tokyo)と一致したら処理開始
  * - 取得：
- *   - PTSナイトタイム上昇率：最大30件（1ページ15件 → 不足時 page=2 取得）
- *   - PTSナイトタイム下落率：最大30件（同上）
- *   - 朝刊ニュース銘柄：全件ページング（次ページが15件未満になったら終了）
+ *   - PowerShellで取得済みのHTMLを /opt/invest/scraping/data/yyyyMMdd から読み込む
  * - 出力（CSV）：
  *   シート想定の共通10列：
  *   '種別','証券コード','銘柄名','市場','終値','値幅制限','PTS終値／内容','終値比','終値比(%)','出来高'
  * - 出力先：/opt/invest/scraping/tmp に csv + メッセージtxt
  * - Driveへアップロード（CSVはGoogleスプレッドシート化）→ 成功後ローカル削除
  * - メール送信なし
+ * 起動例：
+ *   php pts_morning_news.php
+ *   php pts_morning_news.php 2026-06-14
+ *   php pts_morning_news.php 2026-06-14 --force
+ *
+ *   --forceなし：
+ *     PTS上昇率ページの日付が本日でなければ終了
+ *   --forceあり：
+ *     日付不一致でも処理続行
+ 
  */
 
 require __DIR__ . '/lib/scraping_common.php';
-
-http_session_begin(true);
 
 date_default_timezone_set('Asia/Tokyo');
 
@@ -32,42 +37,63 @@ $URL_PTS_DOWN = 'https://kabutan.jp/warning/pts_night_price_decrease';
 $URL_MORNING  = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu';
 
 $MAX_PTS = 30;
-$INTERVAL_US = 800000; // 0.8秒（必要なら調整）
+$MAX_MORNING_PAGES = 50;
+
+$inputDate = $argv[1] ?? (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
+$force = in_array('--force', $argv, true);
+
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $inputDate)) {
+  throw new InvalidArgumentException("日付はYYYY-MM-DD形式で指定してください: {$inputDate}");
+}
+
+$dataDirDate = str_replace('-', '', $inputDate);
+
+$DATA_DIR = "/opt/invest/scraping/data/{$dataDirDate}";
+
+$urlToFile = [
+  $URL_PTS_UP   => '05_pts_01_pts_night_price_increase.html',
+  $URL_PTS_DOWN => '05_pts_02_pts_night_price_decrease.html',
+];
+
+for ($i = 1; $i <= $MAX_MORNING_PAGES; $i++) {
+  $urlToFile[addPageParam($URL_MORNING, $i)] = sprintf('06_news_%02d_morning_news_page.html', $i);
+}
 
 // ===== 日付 =====
-$todayJP   = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y年m月d日');
-$todayISO  = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
-$todayMail = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y/m/d');
+$targetDt   = new DateTimeImmutable($inputDate, new DateTimeZone('Asia/Tokyo'));
+$targetISO  = $targetDt->format('Y-m-d');
+$targetMail = $targetDt->format('Y/m/d');
+$targetJP   = $targetDt->format('Y年m月d日');
 
 // 出力パス（共通関数）
-$paths   = build_output_paths($JOB_NAME, $todayISO);
+$paths   = build_output_paths($JOB_NAME, $targetISO);
 $csvPath = $paths['csv'];
 $txtPath = $paths['txt'];
 
 // ===== 1) 開始条件チェック（PTS上昇率ページの日付が本日か）=====
 echo "開始条件チェック: PTS上昇率ページ\n";
-$htmlUp = http_get_text($URL_PTS_UP);
+$htmlUp = readSavedHtml($URL_PTS_UP, $DATA_DIR, $urlToFile, true);
 
 $startMeta = parseMeigaraCountBlock($htmlUp); // ['dateText','timeText','countText']
-if (!$startMeta || ($startMeta['dateText'] ?? '') !== $todayJP) {
+if (!$force && (!$startMeta || ($startMeta['dateText'] ?? '') !== $targetJP)) {
   $got = $startMeta['dateText'] ?? '不明';
-  echo "本日分ではないため終了: 取得日={$got} / 本日={$todayJP}\n";
+  echo "対象日ではないため終了: 取得日={$got} / 対象日={$targetJP}\n";
   exit(0);
 }
 
-echo "OK: 本日分 ({$todayJP}) を検出。取得開始します。\n";
+echo "OK: 対象日 ({$targetJP}) を検出。取得開始します。\n";
 
-// ===== 2) PTS上昇率 最大30件 =====
-$ptsUp = collectPtsTopN($URL_PTS_UP, $MAX_PTS, $INTERVAL_US);
+// ===== 2) PTS上昇率（保存済みHTML 1ページ目）=====
+$ptsUp = collectPtsTopN($URL_PTS_UP, $MAX_PTS, $DATA_DIR, $urlToFile);
 echo "PTS上昇率: " . count($ptsUp) . "件\n";
 
-// ===== 3) PTS下落率 最大30件 =====
-$ptsDown = collectPtsTopN($URL_PTS_DOWN, $MAX_PTS, $INTERVAL_US);
+// ===== 3) PTS下落率（保存済みHTML 1ページ目）=====
+$ptsDown = collectPtsTopN($URL_PTS_DOWN, $MAX_PTS, $DATA_DIR, $urlToFile);
 echo "PTS下落率: " . count($ptsDown) . "件\n";
 
 // ===== 4) 朝刊ニュース銘柄（全件ページング）=====
 echo "朝刊ニュース銘柄: 1ページ目取得\n";
-$firstMorningHtml = http_get_text($URL_MORNING);
+$firstMorningHtml = readSavedHtml(addPageParam($URL_MORNING, 1), $DATA_DIR, $urlToFile, true);
 
 $morningMeta  = parseMeigaraCountBlock($firstMorningHtml);
 $morningCount = $morningMeta ? extractNumber($morningMeta['countText'] ?? null) : null;
@@ -76,11 +102,10 @@ $morningRows = parseMorningTableRows($firstMorningHtml);
 
 $page = 2;
 while (true) {
-  usleep($INTERVAL_US);
-
   $url = addPageParam($URL_MORNING, $page);
   echo "朝刊ニュース銘柄: page={$page} 取得\n";
-  $html = http_get_text($url);
+  $html = readSavedHtml($url, $DATA_DIR, $urlToFile, false);
+  if ($html === null) break;
 
   $rows = parseMorningTableRows($html);
   if (count($rows) === 0) break;
@@ -100,7 +125,7 @@ writeCsv($csvPath, $ptsUp, $ptsDown, $morningRows);
 echo "ローカルCSV出力完了: {$csvPath}\n";
 
 // ===== 6) メッセージTXT出力（tmp配下）=====
-$subjectLine = "{$JOB_NAME}：{$todayMail}";
+$subjectLine = "{$JOB_NAME}：{$targetMail}";
 
 $morningCountText = ($morningCount !== null) ? "{$morningCount}" : "不明";
 $body =
@@ -114,7 +139,7 @@ write_message_txt($txtPath, $subjectLine, $body);
 echo "ローカルTXT出力完了: {$txtPath}\n";
 
 // ===== 7) Driveへアップロード → ローカル削除 =====
-upload_outputs_and_cleanup($JOB_NAME, $todayISO, $csvPath, $txtPath);
+upload_outputs_and_cleanup($JOB_NAME, $targetISO, $csvPath, $txtPath);
 
 echo "DONE: uploaded and cleaned up.\n";
 exit(0);
@@ -192,17 +217,13 @@ function writeCsv(string $csvPath, array $ptsUp, array $ptsDown, array $morningR
  * 取得＆パース（GASロジック移植）
  * ========================================================= */
 
-function collectPtsTopN(string $baseUrl, int $maxN, int $intervalUs): array {
+function collectPtsTopN(string $baseUrl, int $maxN, string $dataDir, array $urlToFile): array {
   $rows = [];
 
-  $rows = array_merge($rows, parsePtsTableRows(http_get_text($baseUrl)));
+  $rows = array_merge($rows, parsePtsTableRows(readSavedHtml($baseUrl, $dataDir, $urlToFile, true)));
 
-  // 1ページ目が15件で、まだ足りないならpage=2
-  if (count($rows) < $maxN && count($rows) === 15) {
-    usleep($intervalUs);
-    $rows = array_merge($rows, parsePtsTableRows(http_get_text(addPageParam($baseUrl, 2))));
-  }
-
+  
+  // 1ページ目のみ
   if (count($rows) > $maxN) $rows = array_slice($rows, 0, $maxN);
   return $rows;
 }
@@ -247,6 +268,33 @@ function addPageParam(string $url, int $page): string {
   return $url . ((strpos($url, '?') !== false) ? '&' : '?') . 'page=' . $page;
 }
 
+function readSavedHtml(string $url, string $dataDir, array $urlToFile, bool $required): ?string {
+  if (!isset($urlToFile[$url])) {
+    if ($required) {
+      throw new RuntimeException("URLに対応する保存ファイル定義がありません: {$url}");
+    }
+    return null;
+  }
+
+  $path = rtrim($dataDir, '/') . '/' . $urlToFile[$url];
+
+  if (!is_file($path)) {
+    if ($required) {
+      throw new RuntimeException("保存HTMLが見つかりません: {$path}");
+    }
+    return null;
+  }
+
+  $html = file_get_contents($path);
+  if ($html === false || $html === '') {
+    if ($required) {
+      throw new RuntimeException("保存HTMLの読み込みに失敗しました: {$path}");
+    }
+    return null;
+  }
+
+  return $html;
+}
 
 function stripTags(string $s): string {
   return preg_replace('/<[^>]*>/', '', $s);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 /**
  * 適時開示情報（株探 kabutan.jp/disclosures 当日分）
  *
+ * - PowerShellで取得済みのHTMLを /opt/invest/scraping/data/yyyyMMdd から読み込む
  * - 未来→スキップ／同日→取り込み／過去→終了
  * - 当日分「全件」をCSV出力（詳細リンク列は =HYPERLINK("URL","詳細")）
  * - 事前登録コード一致分をメッセージTXTにまとめる（空行区切り、詳細リンクあり）
@@ -11,6 +12,17 @@ declare(strict_types=1);
  * - Google Driveへアップロード（CSVはGoogle Sheets化、TXTはそのまま）
  * - 成功後ローカル削除
  * - メール送信しない
+ * 
+ *   起動例:
+ *
+ *   php tekiji_disclosure.php
+ *     → 当日を対象に実行
+ *
+ *   php tekiji_disclosure.php 2026-06-14
+ *     → 指定日を対象に実行
+ *
+ * ※ --force はありません。
+ *   指定した日付のHTMLフォルダを読み、その日付の開示だけを抽出します。
  *
  * PHP 7.4.30
  */
@@ -23,7 +35,7 @@ const JOB_NAME           = '適時開示';
 
 const BASE_URL           = 'https://kabutan.jp/disclosures/?kubun=&page=';
 const MAX_PAGES          = 50;
-const PAGE_INTERVAL_US   = 1200000; // 1.2秒（GASの1200ms相当）
+const SNAPSHOT_ROOT      = '/opt/invest/scraping/data';
 
 // 事前登録コード（完全一致）
 const TARGET_CODES = ['6492', '290A', '262A', '2502', '4011', '3773', '3655', '5259', '5247'];
@@ -32,12 +44,23 @@ const TARGET_CODES = ['6492', '290A', '262A', '2502', '4011', '3773', '3655', '5
 http_session_begin(true);
 
 // ====== 実行 ======
-main();
+main($argv ?? []);
 
-function main(): void {
+function main(array $argv): void {
   date_default_timezone_set(TZ);
 
-  $todaySlash  = date('Y/m/d');        // yyyy/MM/dd
+  $targetYmd = $argv[1] ?? '';
+  $targetYmd = trim((string)$targetYmd);
+
+  if ($targetYmd !== '') {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $targetYmd)) {
+      fwrite(STDERR, "[ERROR] date must be YYYY-MM-DD. got: {$targetYmd}\n");
+      exit(1);
+    }
+    $todaySlash = str_replace('-', '/', $targetYmd);
+  } else {
+    $todaySlash = date('Y/m/d');
+  }
   $todayHyphen = str_replace('/', '-', $todaySlash); // yyyy-MM-dd
   $todayKey    = dateKey_($todaySlash);
 
@@ -52,13 +75,14 @@ function main(): void {
 
   while (!$stop && $page <= MAX_PAGES) {
     $url = BASE_URL . $page;
-    echo "--- page={$page} GET: {$url}\n";
+    echo "--- page={$page} READ: {$url}\n";
 
-    $html = http_get_text($url, [
-      'timeout' => 30,
-      'retry_max' => 5,
-      'retry_sleep_ms' => 800,
-    ]);
+    try {
+      $html = readSnapshotHtml_($url, $todayHyphen);
+    } catch (Throwable $e) {
+      fwrite(STDERR, "[WARN] snapshot read failed page={$page}: {$e->getMessage()}\n");
+      break;
+    }
 
     $rows = parse_disclosures_stock_table_($html);
 
@@ -112,7 +136,6 @@ function main(): void {
         echo "最大ページ数(" . MAX_PAGES . ")に到達したため終了\n";
         break;
       }
-      usleep(PAGE_INTERVAL_US);
       continue;
     }
 
@@ -124,7 +147,6 @@ function main(): void {
     // 判定不能/未来混在 → 安全側で次ページ
     $page++;
     if ($page > MAX_PAGES) break;
-    usleep(PAGE_INTERVAL_US);
   }
 
   echo "=== 巡回終了: 当日全件=" . count($allTodayRows) . " / 抽出=" . count($pickedRows) . " ===\n";
@@ -220,6 +242,40 @@ function build_message_body_(string $todaySlash, array $pickedRows, array $allTo
   $lines[] = "当日全件数: " . count($allTodayRows) . "件";
 
   return implode("\n", $lines) . "\n";
+}
+
+function readSnapshotHtml_(string $url, string $todayHyphen): string {
+  $file = snapshotFilePath_($url, $todayHyphen);
+
+  if (!is_file($file)) {
+    throw new RuntimeException("snapshot file not found: {$file}");
+  }
+
+  $html = file_get_contents($file);
+
+  if ($html === false) {
+    throw new RuntimeException("snapshot read failed: {$file}");
+  }
+
+  return $html;
+}
+
+function snapshotFilePath_(string $url, string $todayHyphen): string {
+  $snapshotDate = str_replace('-', '', $todayHyphen);
+
+  if (!preg_match('/[?&]page=(\d+)/', $url, $m)) {
+    throw new RuntimeException("page parameter not found: {$url}");
+  }
+
+  $page = (int)$m[1];
+
+  if ($page < 1 || $page > MAX_PAGES) {
+    throw new RuntimeException("page out of range: {$page}");
+  }
+
+  $fileName = sprintf('03_disclosure_%02d_disclosures_page.html', $page);
+
+  return SNAPSHOT_ROOT . '/' . $snapshotDate . '/' . $fileName;
 }
 
 /**

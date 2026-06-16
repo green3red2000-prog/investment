@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * 大量保有速報（maonline.jp/kabuhoyu） 当日分スクレイピング PHP版
  *
- * - Webshare Proxy（scraping_common.php 経由）
+ * - PowerShellで取得済みのHTMLを /opt/invest/scraping/data/yyyyMMdd から読み込む
  * - 出力: /opt/invest/scraping/tmp
  *   - 大量保有速報_yyyy-MM-dd.csv
  *   - 大量保有速報_メッセージ_yyyy-MM-dd.txt
@@ -15,6 +15,23 @@ declare(strict_types=1);
  * - todayStr は実日付（Asia/Tokyo）
  * - 「内容」に（買い増し）/（保有減少）が含まれる場合は「区分」を上書きし、当該文字列を「内容」から削除
  * - 対象者/証券コードの厳密分離（例: 株式会社Birdman＜7063＞…）
+ *
+ * 起動例:
+ *
+ *   php kabuhoyu_sokuhou.php
+ *     → 当日を対象に実行
+ *
+ *   php kabuhoyu_sokuhou.php 2026-06-14
+ *     → 指定日を対象に実行
+ *   
+ *   ※ --force はありません。指定した日付のHTMLフォルダを読み、その日付の開示だけを抽出します。
+ *
+ * 出力:
+ *   /opt/invest/scraping/tmp
+ *   - 大量保有速報_yyyy-MM-dd.csv
+ *   - 大量保有速報_メッセージ_yyyy-MM-dd.txt
+ *
+ * Driveへアップロード後、ローカルファイルを削除
  */
 
 require __DIR__ . '/lib/scraping_common.php';
@@ -27,8 +44,31 @@ date_default_timezone_set('Asia/Tokyo');
 // ===== 設定 =====
 $JOB_NAME     = '大量保有速報';
 $BASE_URL     = 'https://maonline.jp';
-$MAX_PAGES    = 50;
-$INTERVAL_US  = 2000000; // 1.2秒（必要なら調整）
+$MAX_PAGES    = 20;
+$SNAPSHOT_ROOT = '/opt/invest/scraping/data';
+
+$URL_FILE_MAP = [
+  'https://maonline.jp/kabuhoyu?page=1'  => '02_holding_01_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=2'  => '02_holding_02_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=3'  => '02_holding_03_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=4'  => '02_holding_04_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=5'  => '02_holding_05_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=6'  => '02_holding_06_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=7'  => '02_holding_07_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=8'  => '02_holding_08_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=9'  => '02_holding_09_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=10' => '02_holding_10_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=11' => '02_holding_11_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=12' => '02_holding_12_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=13' => '02_holding_13_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=14' => '02_holding_14_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=15' => '02_holding_15_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=16' => '02_holding_16_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=17' => '02_holding_17_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=18' => '02_holding_18_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=19' => '02_holding_19_kabuhoyu_page.html',
+  'https://maonline.jp/kabuhoyu?page=20' => '02_holding_20_kabuhoyu_page.html',
+];
 
 // 任意: キーワード（メッセージTXTに「ヒット一覧」を書くだけ。メールは送らない）
 $KEYWORDS = [
@@ -61,11 +101,10 @@ for ($page = 1; $page <= $MAX_PAGES; $page++) {
   echo "ページ取得: page={$page} url={$url}\n";
 
   try {
-    $html = http_get_text($url);
+    $html = readSnapshotHtml($url, $todayStr, $SNAPSHOT_ROOT, $URL_FILE_MAP);
   } catch (Throwable $e) {
-    fwrite(STDERR, "[WARN] fetch failed page={$page}: {$e->getMessage()}\n");
-    usleep($INTERVAL_US);
-    continue;
+    fwrite(STDERR, "[WARN] snapshot read failed page={$page}: {$e->getMessage()}\n");
+    break;
   }
 
   $newsList = parseNewsBlocks($html);
@@ -73,7 +112,6 @@ for ($page = 1; $page <= $MAX_PAGES; $page++) {
 
   if (count($newsList) === 0) {
     echo "情報なし: 次ページへ\n";
-    usleep($INTERVAL_US);
     continue;
   }
 
@@ -111,7 +149,6 @@ for ($page = 1; $page <= $MAX_PAGES; $page++) {
   }
 
   if ($pageHasToday) {
-    usleep($INTERVAL_US);
     continue;
   }
 
@@ -154,6 +191,32 @@ echo "処理完了\n";
 // =====================
 // 関数群
 // =====================
+
+function readSnapshotHtml(
+  string $url,
+  string $todayStr,
+  string $snapshotRoot,
+  array $urlFileMap
+): string {
+  if (!isset($urlFileMap[$url])) {
+    throw new RuntimeException("URL not mapped: {$url}");
+  }
+
+  $snapshotDate = str_replace('-', '', $todayStr);
+  $file = $snapshotRoot . '/' . $snapshotDate . '/' . $urlFileMap[$url];
+
+  if (!is_file($file)) {
+    throw new RuntimeException("snapshot file not found: {$file}");
+  }
+
+  $html = file_get_contents($file);
+
+  if ($html === false) {
+    throw new RuntimeException("snapshot read failed: {$file}");
+  }
+
+  return $html;
+}
 
 /**
  * <div class="news_box"> ... <div class="news"> ... を拾う（GASのregex踏襲）

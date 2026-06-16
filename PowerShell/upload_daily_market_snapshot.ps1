@@ -35,6 +35,9 @@ $LocalDir = Join-Path $LocalRoot $Today
 $RemoteRoot = '/opt/invest/scraping/data'
 $RemoteDir = "$RemoteRoot/$Today"
 
+$RemoteCompleteFile = '/opt/invest/scraping/data/complete_upload_daily_market_snapshot.txt'
+$LocalCompleteFile = Join-Path $env:TEMP "complete_upload_daily_market_snapshot.txt"
+
 if (-not (Test-Path $LocalDir)) {
   throw "local dir not found: $LocalDir"
 }
@@ -48,8 +51,12 @@ $Lines = @(
   'open sftp://invest_upload@133.18.243.68/ -hostkey="ssh-ed25519 255 kwRNshQrTFTUH5++xLJL8i2WUPILoam0f/1FcaREEFI" -privatekey="C:\work\share\development\investment\ppk\invest_upload.ppk"',
   "mkdir `"$RemoteDir`"",
   "put `"$LocalDir\*.html`" `"$RemoteDir/`"",
+  "put `"$LocalCompleteFile`" `"$RemoteCompleteFile`"",
   'exit'
 )
+
+$CompleteDate = [datetime]::ParseExact($Today,'yyyyMMdd',$null).ToString('yyyy-MM-dd')
+[System.IO.File]::WriteAllText($LocalCompleteFile,$CompleteDate,[System.Text.Encoding]::ASCII)
 
 [System.IO.File]::WriteAllLines($ScriptPath, $Lines, [System.Text.Encoding]::ASCII)
 
@@ -65,5 +72,8 @@ if ($LASTEXITCODE -ne 0) {
   Write-Host "[ERROR] log: $LogPath"
   throw 'WinSCP upload failed'
 }
+
+Remove-Item $LocalCompleteFile -Force -ErrorAction SilentlyContinue
+Remove-Item $ScriptPath -Force -ErrorAction SilentlyContinue
 
 Write-Host '[OK] upload finished'
