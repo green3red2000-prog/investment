@@ -107,38 +107,62 @@ if (!$isRecovery) {
   }
 }
 
-$jobs = [
-  [
-    'daily_market_snapshot.php',
-    array_merge(
-      ["--date={$targetDate}"],
-      $isRecovery ? ['--force'] : []
-    )
-  ],
+if ($isRecovery) {
+  $jobs = [
+    [
+      'daily_market_snapshot.php',
+      ["--date={$targetDate}", '--force']
+    ],
 
-  [
-    'kabuhoyu_sokuhou.php',
-    [$targetDate]
-  ],
+    [
+      'kabuhoyu_sokuhou.php',
+      [$targetDate]
+    ],
 
-  [
-    'tekiji_disclosure.php',
-    [$targetDate]
-  ],
+    [
+      'tekiji_disclosure.php',
+      [$targetDate]
+    ],
 
-  [
-    'kessan_sokuhou.php',
-    [$targetDate]
-  ],
+    [
+      'kessan_sokuhou.php',
+      [$targetDate]
+    ],
 
-  [
-    'pts_morning_news.php',
-    array_merge(
-      [$targetDate],
-      $isRecovery ? ['--force'] : []
-    )
-  ],
-];
+    [
+      'pts_morning_news.php',
+      [$targetDate, '--force']
+    ],
+  ];
+
+} else {
+  $jobs = [
+    [
+      'daily_market_snapshot.php',
+      []
+    ],
+
+    [
+      'kabuhoyu_sokuhou.php',
+      []
+    ],
+
+    [
+      'tekiji_disclosure.php',
+      []
+    ],
+
+    [
+      'kessan_sokuhou.php',
+      []
+    ],
+
+    [
+      'pts_morning_news.php',
+      []
+    ],
+  ];
+}
 
 try {
   foreach ($jobs as [$script, $extraArgs]) {
