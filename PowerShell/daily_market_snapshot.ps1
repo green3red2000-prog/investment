@@ -28,6 +28,8 @@ $TargetDate04Earnings = '2026-06-12'
 
 $MaxPage06MorningNews = $null
 
+$CdpTimeoutSec = 60
+
 $Items = @(
   @{ Url = 'https://kabutan.jp/warning/trading_value_ranking'; File = '01_market_01_trading_value_ranking.html'; Check = 1 },
   @{ Url = 'https://kabutan.jp/warning/volume_ranking'; File = '01_market_02_volume_ranking.html'; Check = 1 },
@@ -265,12 +267,23 @@ function Send-Cdp {
   $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Json)
   $Seg = New-Object System.ArraySegment[byte] -ArgumentList @(,$Bytes)
 
-  $Ws.SendAsync(
-    $Seg,
-    [System.Net.WebSockets.WebSocketMessageType]::Text,
-    $true,
-    [Threading.CancellationToken]::None
-  ).Wait()
+  $Cts = New-Object System.Threading.CancellationTokenSource
+  $Cts.CancelAfter($CdpTimeoutSec * 1000)
+
+  try {
+    $Task = $Ws.SendAsync(
+      $Seg,
+      [System.Net.WebSockets.WebSocketMessageType]::Text,
+      $true,
+      $Cts.Token
+    )
+
+    if (-not $Task.Wait($CdpTimeoutSec * 1000)) {
+      throw "CDP send timeout: id=$Id method=$Method"
+    }
+  } finally {
+    $Cts.Dispose()
+  }
 }
 
 function Receive-Cdp {
@@ -279,11 +292,30 @@ function Receive-Cdp {
   $Buffer = New-Object byte[] 1048576
   $Ms = New-Object System.IO.MemoryStream
 
-  do {
-    $Seg = New-Object System.ArraySegment[byte] -ArgumentList @(,$Buffer)
-    $Result = $Ws.ReceiveAsync($Seg, [Threading.CancellationToken]::None).Result
-    $Ms.Write($Buffer, 0, $Result.Count)
-  } while (-not $Result.EndOfMessage)
+  $Cts = New-Object System.Threading.CancellationTokenSource
+  $Cts.CancelAfter($CdpTimeoutSec * 1000)
+
+  try {
+    do {
+      $Seg = New-Object System.ArraySegment[byte] -ArgumentList @(,$Buffer)
+      $Task = $Ws.ReceiveAsync($Seg, $Cts.Token)
+
+      if (-not $Task.Wait($CdpTimeoutSec * 1000)) {
+        throw "CDP receive timeout"
+      }
+
+      $Result = $Task.Result
+
+      if ($Result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+        throw "CDP websocket closed"
+      }
+
+      $Ms.Write($Buffer, 0, $Result.Count)
+
+    } while (-not $Result.EndOfMessage)
+  } finally {
+    $Cts.Dispose()
+  }
 
   $Text = [System.Text.Encoding]::UTF8.GetString($Ms.ToArray())
   return $Text | ConvertFrom-Json
@@ -294,12 +326,21 @@ function Invoke-Cdp {
 
   Send-Cdp $Ws $Id $Method $Params
 
-  while ($true) {
+  $Limit = (Get-Date).AddSeconds($CdpTimeoutSec)
+
+  while ((Get-Date) -lt $Limit) {
     $Msg = Receive-Cdp $Ws
+
     if ($Msg.id -eq $Id) {
+      if ($Msg.error -ne $null) {
+        throw "CDP error: id=$Id method=$Method message=$($Msg.error.message)"
+      }
+
       return $Msg
     }
   }
+
+  throw "CDP invoke timeout: id=$Id method=$Method"
 }
 
 function Get-Html-From-Edge {
@@ -311,7 +352,18 @@ function Get-Html-From-Edge {
   $WsUrl = $Target.webSocketDebuggerUrl
 
   $Ws = [System.Net.WebSockets.ClientWebSocket]::new()
-  $Ws.ConnectAsync([Uri]$WsUrl, [Threading.CancellationToken]::None).Wait()
+  $CtsConnect = New-Object System.Threading.CancellationTokenSource
+  $CtsConnect.CancelAfter($CdpTimeoutSec * 1000)
+
+  try {
+    $ConnectTask = $Ws.ConnectAsync([Uri]$WsUrl, $CtsConnect.Token)
+
+    if (-not $ConnectTask.Wait($CdpTimeoutSec * 1000)) {
+      throw "CDP connect timeout"
+    }
+  } finally {
+    $CtsConnect.Dispose()
+  }
 
   try {
     Invoke-Cdp $Ws 1 'Network.enable' $null | Out-Null
@@ -767,6 +819,15 @@ New-Item -ItemType Directory -Force -Path $Profile | Out-Null
 
 $SaveDir = Join-Path $SaveRoot (Get-Date -Format 'yyyyMMdd')
 New-Item -ItemType Directory -Force -Path $SaveDir | Out-Null
+
+Write-Host '[INFO] kill existing edge'
+
+try {
+  taskkill /F /IM msedge.exe 2>$null | Out-Null
+} catch {
+}
+
+Start-Sleep -Seconds 5
 
 Write-Host '[INFO] start edge'
 

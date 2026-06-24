@@ -1,4 +1,6 @@
-﻿$BaseDir = 'C:\work\share\development\investment\PowerShell'
+﻿Add-Content C:\work\task_trace.log "$(Get-Date) START"
+
+$BaseDir = 'C:\work\share\development\investment\PowerShell'
 
 $DownloadScript = Join-Path $BaseDir 'daily_market_snapshot.ps1'
 $UploadScript   = Join-Path $BaseDir 'upload_daily_market_snapshot.ps1'
@@ -8,6 +10,8 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $Today = Get-Date -Format 'yyyyMMdd'
 $LogPath = Join-Path $LogDir "run_daily_market_snapshot_all_$Today.log"
+
+$ExitCode = 0
 
 function Write-Log {
   param([string]$Message)
@@ -42,9 +46,12 @@ try {
   Write-Log '[STEP] upload finished'
   Write-Log '[DONE] all finished'
 
-  exit 0
-
 } catch {
   Write-Log "[ERROR] $_"
-  exit 1
+  $ExitCode = 1
+  
+} finally {
+  Add-Content C:\work\task_trace.log "$(Get-Date) END exit=$ExitCode"
 }
+
+exit $ExitCode
