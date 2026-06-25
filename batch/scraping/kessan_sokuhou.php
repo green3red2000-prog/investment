@@ -13,7 +13,7 @@ declare(strict_types=1);
  * 起動例:
  *
  *   php kessan_sokuhou.php
- *     → 前日を対象に実行
+ *     → 当日を対象に実行
  *
  *   php kessan_sokuhou.php 2026-06-14
  *     → 指定日を対象に実行
@@ -49,7 +49,7 @@ if ($targetArg !== '') {
   $targetISODate = $targetArg;
   $effectiveTarget = date('m/d', strtotime($targetISODate));
 } else {
-  $targetISODate = date('Y-m-d', strtotime('-1 day'));
+  $targetISODate = date('Y-m-d');
   $effectiveTarget = date('m/d', strtotime($targetISODate));
 }
 
