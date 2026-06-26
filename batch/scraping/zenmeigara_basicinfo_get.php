@@ -18,7 +18,8 @@ declare(strict_types=1);
  *
  * 実行例:
  *   php zenmeigara_basicinfo_get.php
- *   php zenmeigara_basicinfo_get.php --date=2026-01-17 --max=120
+ *   php zenmeigara_basicinfo_get.php --date=2026-06-24 --max=3
+ *   php zenmeigara_basicinfo_get.php --date=2026-06-24 --max=3 --noupload
  */
 
 require __DIR__ . '/lib/scraping_common.php';
@@ -42,16 +43,16 @@ $DATA_HEADERS = [
   '出来高','信用日付','信用売り残','信用買い残','信用倍率'
 ];
 
-$SLEEP_US_DEFAULT_MIN = 1000000; // 1.0 sec
-$SLEEP_US_DEFAULT_MAX = 2000000; // 2.0 sec
+$SLEEP_SEC_MIN = 15;
+$SLEEP_SEC_MAX = 20;
 
 // =====================
 // 引数
 // =====================
 $args = parse_args($argv);
 $targetISODate = $args['date'] ?? date('Y-m-d');
-$sleepUsMin    = $SLEEP_US_DEFAULT_MIN;
-$sleepUsMax    = $SLEEP_US_DEFAULT_MAX;
+$maxRows = isset($args['max']) ? (int)$args['max'] : 0;
+$noUpload = isset($args['noupload']);
 
 // =====================
 // メイン
@@ -61,6 +62,8 @@ $csvPath = $paths['csv'];
 $txtPath = $paths['txt'];
 
 echo "[INFO] date={$targetISODate} \n";
+echo "[INFO] maxRows={$maxRows}\n";
+echo "[INFO] noUpload=" . ($noUpload ? 'true' : 'false') . "\n";
 
 // 1) 証券コード一覧を Drive から取得（export CSV）
 try {
@@ -77,12 +80,16 @@ if (count($codes) === 0) {
 
 echo "[INFO] codes loaded: " . count($codes) . "\n";
 
+//3銘柄固定テスト
+//$codes = ['7203', '9984', '6758'];
+//echo "[TEST] codes overridden: " . implode(',', $codes) . "\n";
+//$GLOBALS['BASICINFO_TEST_CODES'] =  $codes;
+
 // 2) kabutan から取得して rows を作る
 $rows = [];
 $ok = 0; $err = 0; $skipped = 0;
 
-//$processedCount = 0; // ★ テスト用：最大処理件数
-//$TEST_LIMIT = 15; // ★ テスト用：最大処理件数
+$processedCount = 0;
 
 foreach ($codes as $i => $code) {
 
@@ -141,19 +148,17 @@ foreach ($codes as $i => $code) {
 
   $rows[] = $row;
   
-  // ★ 処理件数カウント
-  //$processedCount++;
+  $processedCount++;
 
-  // ★ テスト用：15件処理したら終了
-  //if ($processedCount >= $TEST_LIMIT) {
-  //  echo "[TEST MODE] reached {$TEST_LIMIT} rows, stop scraping.\n";
-  //  break;
-  //}
-
+  if ($maxRows > 0 && $processedCount >= $maxRows) {
+    echo "[INFO] max={$maxRows} reached, stop scraping.\n";
+    break;
+  }
+  
   // ★ MIN〜MAXの範囲で揺らぎ
-  $us = random_int($sleepUsMin, $sleepUsMax);
-  if (($n % 100) === 0) echo "[INFO] sleep_us={$us}\n";
-  usleep($us);
+  $sec = random_int($SLEEP_SEC_MIN, $SLEEP_SEC_MAX) + (random_int(0, 1000) / 1000);
+  if (($n % 100) === 0) echo "[INFO] sleep_sec={$sec}\n";
+  usleep((int)($sec * 1_000_000));
 }
 
 // 3) CSV出力
@@ -185,7 +190,11 @@ write_message_txt($txtPath, $subjectLine, $body);
 echo "[INFO] local outputs written:\n- {$csvPath}\n- {$txtPath}\n";
 
 // 5) アップロード→削除
-upload_outputs_and_cleanup($JOB_NAME, $targetISODate, $csvPath, $txtPath);
+if ($noUpload) {
+  echo "[INFO] --noupload specified. upload skipped.\n";
+} else {
+  upload_outputs_and_cleanup($JOB_NAME, $targetISODate, $csvPath, $txtPath);
+}
 
 // =====================
 // Functions
@@ -195,8 +204,15 @@ function parse_args(array $argv): array {
   $out = [];
   foreach ($argv as $idx => $a) {
     if ($idx === 0) continue;
+
     if (preg_match('/^--([^=]+)=(.*)$/', $a, $m)) {
       $out[$m[1]] = $m[2];
+      continue;
+    }
+
+    if (preg_match('/^--([^=]+)$/', $a, $m)) {
+      $out[$m[1]] = true;
+      continue;
     }
   }
   return $out;
@@ -271,8 +287,17 @@ function load_codes_from_drive_sheet(array $folderPath, string $sheetName): arra
 
 function fetch_kabutan_basicinfo(string $code): array {
   $url = 'https://kabutan.jp/stock/?code=' . rawurlencode($code);
-  $html = http_get_text($url);
+  
+  if (!function_exists('http_get_text_browser')) {
+    throw new RuntimeException("http_get_text_browser() が見つかりません（scraping_common.php を確認）");
+  }
 
+  echo "[HTTP] {$code} {$url}\n";
+
+  //$html = http_get_text_browser_with_good_proxy_pool($url, $GLOBALS['BASICINFO_TEST_CODES'] ?? [], [
+  $html = http_get_text_browser($url, [
+    'timeout' => 90,
+  ]);
   if ($html === '' || strpos($html, 'id="stockinfo_i1"') === false) {
     throw new RuntimeException('Kabutan HTML not found or layout changed');
   }

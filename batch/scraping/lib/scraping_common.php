@@ -126,6 +126,10 @@ $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = null;
 // 収集：エラーになったプロキシ（host:port）
 $GLOBALS['SCRAPE_BAD_PROXIES'] = [];
 
+$GLOBALS['BROWSER_GOOD_PROXIES'] = [];
+$GLOBALS['BROWSER_BAD_PROXIES']  = [];
+$GLOBALS['BROWSER_IP_TEST_DONE'] = false;
+
 // =======================================================
 // Public API
 // =======================================================
@@ -433,6 +437,7 @@ function http_get_text_browser(string $url, array $opt = []): string {
 
   for ($try = 1; $try <= $retryMax; $try++) {
     $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] ?? pick_random_proxy_credential();
+    $proxyHp = proxy_hostport_((string)$cred['proxy']);
 
     $outDir = $opt['out_dir'] ?? '/opt/invest/scraping/tmp';
     ensure_dir($outDir);
@@ -464,18 +469,61 @@ function http_get_text_browser(string $url, array $opt = []): string {
     if (!is_resource($proc)) {
       throw new RuntimeException("proc_open failed: {$cmd}");
     }
+    
+    $status = proc_get_status($proc);
+    $pid = $status['pid'] ?? 0;
 
     fclose($pipes[0]);
     stream_set_timeout($pipes[1], $timeoutSec);
     stream_set_timeout($pipes[2], $timeoutSec);
 
-    $stdout = stream_get_contents($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
+    $stdout = '';
+    $stderr = '';
+    $exitCode = null;
+
+    $start = time();
+
+    while (true) {
+
+      $stdout .= stream_get_contents($pipes[1]);
+      $stderr .= stream_get_contents($pipes[2]);
+
+      $status = proc_get_status($proc);
+
+      if (!$status['running']) {
+        break;
+      }
+
+      if ((time() - $start) >= $timeoutSec) {
+
+        fwrite(STDERR,
+          "[BROWSER][timeout] {$timeoutSec}s proxy={$proxyHp} pid={$pid} {$url}\n"
+        );
+
+        @proc_terminate($proc);
+
+        if (stripos(PHP_OS, 'WIN') === 0 && $pid > 0) {
+          exec("taskkill /F /T /PID {$pid}");
+          exec("taskkill /IM msedge.exe /F");
+        }
+
+        $lastErr = "Playwright timeout({$timeoutSec}s) via {$proxyHp}: {$url}";
+        $exitCode = -1;
+
+        break;
+      }
+
+      usleep(200000);
+    }
 
     fclose($pipes[1]);
     fclose($pipes[2]);
 
-    $exitCode = proc_close($proc);
+    $closedExitCode = @proc_close($proc);
+
+    if ($exitCode === null) {
+      $exitCode = is_int($closedExitCode) ? $closedExitCode : -1;
+    }
 
     if ($exitCode === 0 && file_exists($outPath)) {
       $html = file_get_contents($outPath);
@@ -487,11 +535,11 @@ function http_get_text_browser(string $url, array $opt = []): string {
         return $html;
       }
     } else {
-      $lastErr = "Playwright failed(exit={$exitCode}) url={$url} stderr=" . trim($stderr);
+      $lastErr = "Playwright failed(exit={$exitCode}) via {$proxyHp} url={$url} stderr=" . trim($stderr);
     }
 
     // リトライ：proxy rotate（sticky時のみ）＆sleep
-    fwrite(STDERR, "[BROWSER][retry {$try}/{$retryMax}] {$lastErr}\n");
+    fwrite(STDERR, "[BROWSER][retry {$try}/{$retryMax}] proxy={$proxyHp} {$lastErr}\n");
     usleep($sleepMs * 1000);
     if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
       http_session_reset_proxy();
@@ -500,6 +548,151 @@ function http_get_text_browser(string $url, array $opt = []): string {
 
   throw new RuntimeException($lastErr ?? "Playwright error: {$url}");
 }
+
+/**
+ * 初回だけ指定銘柄で全Webshareプロキシをテストし、
+ * 成功したプロキシだけを使って http_get_text_browser() を実行する。
+ *
+ * @param string $url
+ * @param array $testCodes 例: ['7203','9984','6758']
+ * @param array $opt
+ */
+function http_get_text_browser_with_good_proxy_pool(string $url, array $testCodes, array $opt = []): string {
+
+  if (empty($GLOBALS['BROWSER_IP_TEST_DONE'])) {
+    browser_test_all_proxies_by_codes_($testCodes, $opt);
+    $GLOBALS['BROWSER_IP_TEST_DONE'] = true;
+  }
+
+  $good = $GLOBALS['BROWSER_GOOD_PROXIES'] ?? [];
+
+  if (!is_array($good) || count($good) === 0) {
+    throw new RuntimeException('成功IPがなくなりました');
+  }
+
+  $lastErr = null;
+
+  while (count($GLOBALS['BROWSER_GOOD_PROXIES']) > 0) {
+    $cred = array_shift($GLOBALS['BROWSER_GOOD_PROXIES']);
+    $proxyHp = proxy_hostport_((string)$cred['proxy']);
+
+    try {
+      $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = $cred;
+
+      return http_get_text_browser($url, array_merge($opt, [
+        'retry_max' => 1,
+      ]));
+
+    } catch (Throwable $e) {
+      $lastErr = $e->getMessage();
+
+      fwrite(STDERR,
+        "[BROWSER][GOOD_PROXY_FAILED] {$proxyHp} {$url} {$lastErr}\n"
+      );
+
+      $GLOBALS['BROWSER_BAD_PROXIES'][$proxyHp] = true;
+      remember_bad_proxy_((string)$cred['proxy']);
+
+      continue;
+    }
+  }
+
+  throw new RuntimeException(
+    '成功IPがなくなりました: ' . ($lastErr ?? $url)
+  );
+}
+/**
+ * Webshareプロキシを全件テストし、成功/失敗を記録する。
+ *
+ * 成功条件:
+ * - Playwright取得成功
+ * - HTML内に stockinfo_i1 がある
+ */
+function browser_test_all_proxies_by_codes_(array $testCodes, array $opt = []): void {
+
+  $list = $GLOBALS['WEBSHARE_PROXIES'] ?? [];
+
+  if (!is_array($list) || count($list) === 0) {
+    throw new RuntimeException('WEBSHARE_PROXIES が空です');
+  }
+
+  $GLOBALS['BROWSER_GOOD_PROXIES'] = [];
+  $GLOBALS['BROWSER_BAD_PROXIES']  = [];
+
+  $timeout = (int)($opt['timeout'] ?? 90);
+
+  fwrite(STDERR,
+    "[BROWSER][IP_TEST] start proxies=" . count($list) .
+    " test_codes=" . implode(',', $testCodes) . "\n"
+  );
+
+  $testCodes = array_values(array_filter(array_map(function($c) {
+    return trim((string)$c);
+  }, $testCodes), function($c) {
+    return $c !== '';
+  }));
+
+  if (count($testCodes) === 0) {
+    throw new RuntimeException('testCodes が空です');
+  }
+
+  $proxyIndex = 0;
+
+  foreach ($list as $cred) {
+    $proxyHp = proxy_hostport_((string)$cred['proxy']);
+    $ok = false;
+    $lastErr = '';
+
+    $code = $testCodes[$proxyIndex % count($testCodes)];
+    $proxyIndex++;
+
+    $testUrl = 'https://kabutan.jp/stock/?code=' . rawurlencode($code);
+
+    fwrite(STDERR,
+      "[BROWSER][IP_TEST][TRY] {$proxyHp} code={$code}\n"
+    );
+
+    try {
+      $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = $cred;
+
+      $html = http_get_text_browser($testUrl, [
+        'timeout' => $timeout,
+        'retry_max' => 1,
+        'retry_sleep_ms' => 500,
+      ]);
+
+      if ($html !== '' && strpos($html, 'id="stockinfo_i1"') !== false) {
+        $ok = true;
+      } else {
+        $lastErr = 'stockinfo_i1 not found';
+      }
+
+    } catch (Throwable $e) {
+      $lastErr = $e->getMessage();
+    }
+
+    if ($ok) {
+      fwrite(STDERR, "[BROWSER][IP_TEST][OK] {$proxyHp} code={$code}\n");
+      $GLOBALS['BROWSER_GOOD_PROXIES'][] = $cred;
+    } else {
+      fwrite(STDERR, "[BROWSER][IP_TEST][NG] {$proxyHp} code={$code} {$lastErr}\n");
+      $GLOBALS['BROWSER_BAD_PROXIES'][$proxyHp] = true;
+      remember_bad_proxy_((string)$cred['proxy']);
+    }
+  }
+
+  fwrite(STDERR,
+    "[BROWSER][IP_TEST] done good=" .
+    count($GLOBALS['BROWSER_GOOD_PROXIES']) .
+    " bad=" . count($GLOBALS['BROWSER_BAD_PROXIES']) . "\n"
+  );
+
+  if (count($GLOBALS['BROWSER_GOOD_PROXIES']) === 0) {
+    throw new RuntimeException('成功IPがありません');
+  }
+}
+
+
 
 /**
  * （処理名）_yyyy-MM-dd.csv をGoogleスプレッドシート化してアップロードし、
