@@ -14,17 +14,17 @@ $SaveRoot = 'C:\work\share\development\investment\data\kabutan\daily_market_snap
 # Target date override for 02_holding.
 # Leave blank to use today's date.
 # Format: yyyy-MM-dd
-$TargetDate02Holding = '2026-06-12'
+$TargetDate02Holding = ''
 
 # Target date override for 03_disclosure.
 # Leave blank to use today's date.
 # Format: yyyy-MM-dd
-$TargetDate03Disclosure = '2026-06-13'
+$TargetDate03Disclosure = ''
 
 # Target date override for 04_earnings.
 # Leave blank to use today's date.
 # Format: yyyy-MM-dd
-$TargetDate04Earnings = '2026-06-12'
+$TargetDate04Earnings = ''
 
 $MaxPage06MorningNews = $null
 
@@ -229,7 +229,16 @@ $Items = @(
   @{ Url = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu&page=47'; File = '06_news_47_morning_news_page.html'; Check = 6 },
   @{ Url = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu&page=48'; File = '06_news_48_morning_news_page.html'; Check = 6 },
   @{ Url = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu&page=49'; File = '06_news_49_morning_news_page.html'; Check = 6 },
-  @{ Url = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu&page=50'; File = '06_news_50_morning_news_page.html'; Check = 6 }
+  @{ Url = 'https://kabutan.jp/warning/?mode=4_1&market=0&capitalization=-1&stc=&stm=1&col=zenhiritsu&page=50'; File = '06_news_50_morning_news_page.html'; Check = 6 },
+  
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0000&ashi=day'; File = '07_index_0000_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0001&ashi=day'; File = '07_index_0001_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0010&ashi=day'; File = '07_index_0010_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0012&ashi=day'; File = '07_index_0012_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0018&ashi=day'; File = '07_index_0018_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0019&ashi=day'; File = '07_index_0019_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0020&ashi=day'; File = '07_index_0020_market_price.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0105&ashi=day'; File = '07_index_0105_market_price.html'; Check = 0 }
 )
 
 Write-Host "[DEBUG] script path = $PSCommandPath"

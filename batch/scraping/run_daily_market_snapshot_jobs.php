@@ -21,6 +21,7 @@ declare(strict_types=1);
  *   tekiji_disclosure.php 2026-06-15
  *   kessan_sokuhou.php 2026-06-15
  *   pts_morning_news.php 2026-06-15 --force
+ *   index_eod_import_from_saved_html.php --target_date=2026-06-15
  *   
  * 	 ※リカバリ起動時は、complete_upload_daily_market_snapshot.txtが無くても動作します。
  * ログ：
@@ -133,6 +134,10 @@ if ($isRecovery) {
       'pts_morning_news.php',
       [$targetDate, '--force']
     ],
+    [
+      'index_eod_import_from_saved_html.php',
+      ["--target_date={$targetDate}"]
+    ],
   ];
 
 } else {
@@ -159,6 +164,10 @@ if ($isRecovery) {
 
     [
       'pts_morning_news.php',
+      []
+    ],
+    [
+      'index_eod_import_from_saved_html.php',
       []
     ],
   ];
