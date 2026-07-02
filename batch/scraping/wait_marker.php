@@ -10,6 +10,11 @@ declare(strict_types=1);
  *   0  = 正常終了
  *   1  = 異常終了
  *   10 = タイムアウト(optional)
+ *
+ * コマンド例
+ *   php wait_marker.php --path=complete_upload_daily_market_snapshot_20260702.txt --timeout=120 --interval=60 --optional=1
+ *   php wait_marker.php --gdrive=complete_security_master_20260702.txt --timeout=30 --interval=60 --optional=1
+ *   php wait_marker.php --gdrive=complete_calendar_20260702.txt --timeout=30 --interval=60 --optional=1
  */
 
 const EXIT_OK = 0;
