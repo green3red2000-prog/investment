@@ -155,8 +155,8 @@ try {
        ' codes=' . count($marginByCode) . "\n";
 
   // 5. 証券コードマスタの取得
-  [$masterRows, $indexSkip] = loadSecurityCodeMasterSheet();
-  echo '[INFO] code master target rows=' . count($masterRows) . " indexSkip={$indexSkip}\n";
+  [$masterRows, $indexSkip, $etfSkip] = loadSecurityCodeMasterSheet();
+  echo '[INFO] code master target rows=' . count($masterRows) . " indexSkip={$indexSkip}"  . " etfSkip={$etfSkip}\n";
   
 
   // 6-7. 個別銘柄の財務情報取得とCSVレコード算出
@@ -186,11 +186,19 @@ try {
     $errorResult = '';
 
     try {
-      $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
+      $fin = null;
+      if (empty($master['is_etf_like']) && empty($master['is_index'])) {
+         $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
+      }
       
+      if (!empty($master['is_index'])) {
+        $curBar = fetchIndexPriceBarFromDb($pdo, $code4, $currentBizISO);
+        $prevBar = fetchIndexPriceBarFromDb($pdo, $code4, $prevBizISO);
+      } else {
+        $curBar = $currentBarsByCode[$code5] ?? $currentBarsByCode[$code4] ?? null;
+        $prevBar = $prevBarsByCode[$code5] ?? $prevBarsByCode[$code4] ?? null;
+      }
       
-      $curBar = $currentBarsByCode[$code5] ?? $currentBarsByCode[$code4] ?? null;
-      $prevBar = $prevBarsByCode[$code5] ?? $prevBarsByCode[$code4] ?? null;
       $margin = $marginByCode[$code5] ?? $marginByCode[$code4] ?? null;
       
       // 当営業日または前営業日の株価データが存在しない銘柄は、
@@ -202,7 +210,7 @@ try {
       }
 
       // DBに財務情報がない銘柄は、code指定で初回登録する。
-      if ($fin === null) {
+      if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
         echo "[API] fins summary initial code={$code5}\n";
         $codeFinsRows = jquantsGetAll(JQUANTS_FINS_SUMMARY_PATH, ['code' => $code5]);
         
@@ -212,13 +220,13 @@ try {
         echo '[INFO] fins initial code=' . $code5 . ' rows=' . count($codeFinsRows) . " upserted={$initialUpserted}\n";
 
         $fin = selectLatestFinsRowFromArray($codeFinsRows, $code5, $targetISODate);
-        if ($fin === null) {
+        if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
           // 念のため、DBにも再問い合わせする。
           $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
         }
       }
 
-      if ($fin === null) {
+      if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
         $errors[] = '財務情報なし';
         $errorResult = 'エラー：財務情報API取得に失敗';
       }
@@ -233,7 +241,7 @@ try {
           $errorResult = 'エラー：信用残情報API取得に失敗';
         }
       }
-      if ($margin === null) {
+      if ($margin === null && empty($master['is_index'])) {
         fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 信用残なし\n");
       }
 
@@ -336,6 +344,7 @@ try {
     "失敗: {$err}\n" .
     "スキップ: {$skip}\n" .
     "指数スキップ: {$indexSkip}\n" .
+  	"ETF等スキップ: {$etfSkip}\n" .
     "財務情報 当日開示 upsert: {$dailyFinsUpserted} 件\n" .
     "財務情報 初回API取得: {$initialFetchCount} 銘柄\n" .
     "財務情報 初回upsert: {$initialUpsertedTotal} 件\n";
@@ -666,6 +675,39 @@ function fetchLatestFinsFromDb(PDO &$pdo, string $code5, string $targetISODate):
   }
 }
 
+function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?array {
+  try {
+    ensurePdoAlive($pdo);
+
+    $sql = "SELECT asof_date, code, close, volume
+            FROM prices_eod
+            WHERE code = :code
+              AND asof_date = :asof_date
+            LIMIT 1";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+      ':code' => normalizeDbCode4($code4),
+      ':asof_date' => $dateISO,
+    ]);
+
+    $row = $stmt->fetch();
+    if (!is_array($row)) return null;
+
+    return [
+      'Date' => $row['asof_date'],
+      'Code' => $row['code'],
+      'AdjC' => $row['close'],
+      'AdjVo' => $row['volume'],
+    ];
+  } catch (Throwable $e) {
+    if (!isReconnectableDbError($e)) throw $e;
+    fwrite(STDERR, '[DB] reconnect and retry fetch index price: ' . $e->getMessage() . "\n");
+    reconnectPdo($pdo);
+    return fetchIndexPriceBarFromDb($pdo, $code4, $dateISO);
+  }
+}
+
 function selectLatestFinsRowFromArray(array $rows, string $code5, string $targetISODate): ?array {
   $best = null;
   $code5 = normalizeCode5($code5);
@@ -739,15 +781,22 @@ function loadSecurityCodeMasterSheet(): array {
 
   $out = [];
   $indexSkip = 0;
+  $etfSkip   = 0;
   for ($i = 1; $i < count($values); $i++) {
     $row = $values[$i];
     $codeRaw = trim((string)($row[$codeIdx] ?? ''));
     if ($codeRaw === '') break;
 
     $marketCode = trim((string)($row[$marketCodeIdx] ?? ''));
-    if ($marketCode === '-') {
+    
+    $isIndex = ($marketCode === '-');
+    $isEtfLike = in_array($marketCode, ['109', '105'], true);
+
+    if ($isIndex) {
       $indexSkip++;
-      continue;
+    }
+    if ($isEtfLike) {
+      $etfSkip++;
     }
 
     $code4 = normalizeDbCode4($codeRaw);
@@ -761,11 +810,13 @@ function loadSecurityCodeMasterSheet(): array {
       'code5' => $code5,
       'name' => trim((string)($row[$nameIdx] ?? '')),
       'market_code' => $marketCode,
-      'market_name' => trim((string)($row[$marketNameIdx] ?? '')),
+      'market_name' => $isIndex ? '指数' : trim((string)($row[$marketNameIdx] ?? '')),
       'industry33' => trim((string)($row[$industry33Idx] ?? '')),
+      'is_index' => $isIndex,
+      'is_etf_like' => $isEtfLike,
     ];
   }
-  return [$out, $indexSkip];
+  return [$out, $indexSkip, $etfSkip];
 }
 
 function loadSpreadsheetValues(string $fileName): array {
