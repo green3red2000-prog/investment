@@ -70,7 +70,7 @@ try {
     // 3) TXT出力
     $subjectLine = JOB_NAME . '：' . $todayIso;
     $body =
-        "証券コードの取得処理を終了しました。\n\n" .
+        "カレンダーの取得処理を終了しました。\n\n" .
         "日付（FROM）：{$fromIso}\n" .
         "日付（TO）：{$toIso}\n" .
         "取得数: {$count} 件\n";
