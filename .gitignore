@@ -1,23 +1,26 @@
-# HTML�ۑ��t�@�C��
+# HTML保存ファイル
 *.html
 
-# CSV
+# CSVファイル
 *.csv
 
-# ���O
+# ログファイル
 *.log
 
-# �ꎞ�t�@�C��
+# 一時ファイル
 *.tmp
 
-# PPK
+# PuTTY秘密鍵
 *.ppk
 
 # Windows
 Thumbs.db
 Desktop.ini
 
-# �t�H���_
+# フォルダ
 browser-profile/
 secrets/
 ppk/
+
+# ローカル設定
+batch/j_quants/conf/config.php
