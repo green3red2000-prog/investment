@@ -62,6 +62,7 @@ const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
 const SECURITY_CODE_MASTER_NAME = '証券コードマスタ';
 
 const SQL_CHUNK_ROWS = 50;
+const CSV_DASH = '－';
 
 const DATA_HEADERS = [
   '証券コード','更新日','実行結果','会社名略称','会社名','業種','概要',
@@ -148,20 +149,23 @@ try {
        ' prev_codes=' . count($prevBarsByCode) . "\n";
 
   // 4. 信用取引週末残高の取得
-  [$marginRows, $marginDateISO] = fetchRecentMarginInterestRows($calendarRows, $currentBizISO, 14);
+  [$marginRows, $marginDateISO] = fetchRecentMarginInterestRows($calendarRows, $currentBizISO, 30);
   $marginByCode = buildMarginByCode($marginRows);
   echo '[INFO] margin date=' . ($marginDateISO ?? '') .
        ' rows=' . count($marginRows) .
        ' codes=' . count($marginByCode) . "\n";
 
   // 5. 証券コードマスタの取得
-  [$masterRows, $indexSkip, $etfSkip] = loadSecurityCodeMasterSheet();
-  echo '[INFO] code master target rows=' . count($masterRows) . " indexSkip={$indexSkip}"  . " etfSkip={$etfSkip}\n";
-  
+  [$masterRows, $indexSkip, $etfCount, $tpmSkip] = loadSecurityCodeMasterSheet();
+  echo '[INFO] code master target rows=' . count($masterRows) .
+  	   " indexCount={$indexSkip}" .
+       " etfCount={$etfCount}" .
+       " tpmSkip={$tpmSkip}\n";
 
   // 6-7. 個別銘柄の財務情報取得とCSVレコード算出
   $rows = [];
   $ok = 0;
+  $warn = 0;
   $err = 0;
   $skip = 0;          // CSV出力対象外になった銘柄
   $initialFetchCount = 0;
@@ -183,12 +187,16 @@ try {
     $row['上場区分'] = $master['market_name'];
 
     $errors = [];
+    $warnings = [];
     $errorResult = '';
+    $finsApiReturnedZero = false;
 
     try {
-      $fin = null;
+      $fin = null;       // 売上高・経常益・最終益・PER/PBR/利回り用
+      $finShares = null; // 時価総額の ShOutFY 用
       if (empty($master['is_etf_like']) && empty($master['is_index'])) {
          $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
+         $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
       }
       
       if (!empty($master['is_index'])) {
@@ -210,28 +218,38 @@ try {
       }
 
       // DBに財務情報がない銘柄は、code指定で初回登録する。
-      if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
+      if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
         echo "[API] fins summary initial code={$code5}\n";
         $codeFinsRows = jquantsGetAll(JQUANTS_FINS_SUMMARY_PATH, ['code' => $code5]);
         
         $initialFetchCount++;
+        if (count($codeFinsRows) === 0) {
+          $finsApiReturnedZero = true;
+        }
         $initialUpserted = upsertFinsSummaryRowsWithReconnect($pdo, $codeFinsRows);
         $initialUpsertedTotal += $initialUpserted;
         echo '[INFO] fins initial code=' . $code5 . ' rows=' . count($codeFinsRows) . " upserted={$initialUpserted}\n";
 
         $fin = selectLatestFinsRowFromArray($codeFinsRows, $code5, $targetISODate);
-        if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
+        $finShares = selectLatestFinsSharesRowFromArray($codeFinsRows, $code5, $targetISODate);
+        if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
           // 念のため、DBにも再問い合わせする。
           $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
+          $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
         }
       }
 
-      if ($fin === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
-        $errors[] = '財務情報なし';
-        $errorResult = 'エラー：財務情報API取得に失敗';
+      if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
+        if ($finsApiReturnedZero) {
+          $warnings[] = '財務情報J-Quants登録なし';
+          fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 財務情報J-Quants登録なし\n");
+        } else {
+          $errors[] = '財務情報なし';
+          $errorResult = 'エラー：財務情報API取得に失敗';
+        }
       }
 
-      // 信用残APIが14日遡っても1件も取得できなかった場合は、
+      // 信用残APIが30日遡っても1件も取得できなかった場合は、
       // 信用残列は空欄のままCSV出力し、実行結果は信用残情報API取得失敗とする。
       // API自体は取得できても、個別銘柄に信用残が存在しない場合は
       // 信用残列を空欄とし、WARNログのみ出力する。
@@ -242,30 +260,63 @@ try {
         }
       }
       if ($margin === null && empty($master['is_index'])) {
-        fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 信用残なし\n");
+      	$warnings[] = '信用残J-Quants登録なし';
+        fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 信用残J-Quants登録なし\n");
       }
 
       $adjC = $curBar !== null ? toFloatOrNull($curBar['AdjC'] ?? null) : null;
+      $calcAdjC = $adjC;
       $prevAdjC = $prevBar !== null ? toFloatOrNull($prevBar['AdjC'] ?? null) : null;
       $adjVo = $curBar !== null ? toFloatOrNull($curBar['AdjVo'] ?? null) : null;
+      $prevAdjVo = $prevBar !== null ? toFloatOrNull($prevBar['AdjVo'] ?? null) : null;
 
       $sales = $fin !== null ? toFloatOrNull($fin['Sales'] ?? null) : null;
       $odp = $fin !== null ? toFloatOrNull($fin['OdP'] ?? null) : null;
       $np = $fin !== null ? toFloatOrNull($fin['NP'] ?? null) : null;
-      $shOut = $fin !== null ? toFloatOrNull($fin['ShOutFY'] ?? null) : null;
+      $shOut = $finShares !== null ? toFloatOrNull($finShares['ShOutFY'] ?? null) : null;
       $feps = $fin !== null ? toFloatOrNull($fin['FEPS'] ?? null) : null;
       $eps = $fin !== null ? toFloatOrNull($fin['EPS'] ?? null) : null;
       $bps = $fin !== null ? toFloatOrNull($fin['BPS'] ?? null) : null;
       $fDivAnn = $fin !== null ? toFloatOrNull($fin['FDivAnn'] ?? null) : null;
       $divAnn = $fin !== null ? toFloatOrNull($fin['DivAnn'] ?? null) : null;
-
-      if ($adjC === null || $adjC <= 0) $errors[] = '当営業日株価データなし';
-      if ($prevAdjC === null || $prevAdjC <= 0) $errors[] = '前営業日株価データなし';
-
-      if ($adjC !== null && $shOut !== null) $row['時価総額'] = ($adjC * $shOut) / 100000000.0;
+      
+      if (empty($master['is_index'])) {
+        if ($adjVo === null) {
+            $warnings[] = '当営業日出来高なし';
+            if (
+              empty($master['is_index']) &&
+              $master['market_name'] !== 'その他' &&
+              $adjVo === null
+            ) {
+              if ($prevAdjVo !== null && $prevAdjC !== null) {
+                $calcAdjC = $prevAdjC;
+              } else {
+                $latestBar = fetchLatestPriceBarFromDb($pdo, $code4, $targetISODate);
+                $latestClose = $latestBar !== null ? toFloatOrNull($latestBar['AdjC'] ?? null) : null;
+                if ($latestClose !== null) {
+                  $calcAdjC = $latestClose;
+                }else {
+                  $warnings[] = '代替終値なし';
+                }
+              }
+            }
+            fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 当営業日出来高なし\n");
+          }
+         if ($prevAdjVo === null) {
+           $warnings[] = '前営業日出来高なし';
+           fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 前営業日出来高なし\n");
+         }
+      }
+      if ($calcAdjC !== null && $shOut !== null) $row['時価総額'] = ($calcAdjC * $shOut) / 100000000.0;
+      if ($shOut === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
+        $row['時価総額'] = CSV_DASH;
+      }
       if ($sales !== null) $row['売上高'] = $sales / 100000000.0;
+      if ($sales === null && $fin !== null) $row['売上高'] = CSV_DASH;
       if ($odp !== null) $row['経常益'] = $odp / 100000000.0;
+      if ($odp === null && $fin !== null) $row['経常益'] = CSV_DASH;
       if ($np !== null) $row['最終益'] = $np / 100000000.0;
+      if ($np === null && $fin !== null) $row['最終益'] = CSV_DASH;
 
       $perBase = null;
       if ($feps !== null && $feps > 0) {
@@ -273,8 +324,8 @@ try {
       } elseif ($eps !== null && $eps > 0) {
         $perBase = $eps;
       }
-      $row['PER'] = ($adjC !== null && $perBase !== null) ? ($adjC / $perBase) : 'ー';
-      $row['PBR'] = ($adjC !== null && $bps !== null && $bps > 0) ? ($adjC / $bps) : 'ー';
+      $row['PER'] = ($calcAdjC !== null && $perBase !== null) ? ($calcAdjC / $perBase) : CSV_DASH;
+      $row['PBR'] = ($calcAdjC !== null && $bps !== null && $bps > 0) ? ($calcAdjC / $bps) : CSV_DASH;
 
       $divBase = null;
       if ($fDivAnn !== null) {
@@ -282,7 +333,7 @@ try {
       } elseif ($divAnn !== null) {
         $divBase = $divAnn;
       }
-      $row['利回り'] = ($adjC !== null && $adjC > 0 && $divBase !== null) ? (($divBase / $adjC) * 100.0) : 'ー';
+      $row['利回り'] = ($calcAdjC !== null && $calcAdjC > 0 && $divBase !== null) ? (($divBase / $calcAdjC) * 100.0) : CSV_DASH;
 
       if ($adjC !== null) $row['終値'] = $adjC;
       if ($prevAdjC !== null && $adjC !== null) {
@@ -300,12 +351,13 @@ try {
         if ($longVol !== null) $row['信用買い残'] = $longVol;
 
         if ($shortVol === null || $longVol === null || $shortVol == 0.0 || $longVol == 0.0) {
-          $row['信用倍率'] = 'ー';
+          $row['信用倍率'] = CSV_DASH;
         } else {
           $row['信用倍率'] = $longVol / $shortVol;
         }
       }
 
+      applyDashByWarningsAndType($row, $warnings, $master);
       enforceOutputFormats($row);
 
     } catch (JQuantsApiException $e) {
@@ -321,8 +373,13 @@ try {
     }
 
     if (count($errors) === 0) {
-      $row['実行結果'] = '正常';
-      $ok++;
+      if (count($warnings) > 0) {
+        $row['実行結果'] = '警告：' . implode('、', $warnings);
+        $warn++;
+      } else {
+        $row['実行結果'] = '正常';
+        $ok++;
+      }
     } else {
       $row['実行結果'] = $errorResult !== '' ? $errorResult : 'エラー：その他例外処理発生';
       $err++;
@@ -341,10 +398,12 @@ try {
     "全銘柄基本情報取得（J-Quants）を完了しました。\n\n" .
     '対象コード数: ' . count($rows) . "\n" .
     "成功: {$ok}\n" .
+    "警告: {$warn}\n" .
     "失敗: {$err}\n" .
     "スキップ: {$skip}\n" .
-    "指数スキップ: {$indexSkip}\n" .
-  	"ETF等スキップ: {$etfSkip}\n" .
+    "指数件数: {$indexSkip}\n" .
+    "ETF等件数: {$etfCount}\n" .
+    "TPM除外件数: {$tpmSkip}\n" .
     "財務情報 当日開示 upsert: {$dailyFinsUpserted} 件\n" .
     "財務情報 初回API取得: {$initialFetchCount} 銘柄\n" .
     "財務情報 初回upsert: {$initialUpsertedTotal} 件\n";
@@ -659,20 +718,94 @@ function fetchLatestFinsFromDb(PDO &$pdo, string $code5, string $targetISODate):
             WHERE Code = :code
               AND DiscDate <= :target_date
             ORDER BY DiscDate DESC, DiscTime DESC, DiscNo DESC
-            LIMIT 1";
+            LIMIT 30";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
       ':code' => normalizeCode5($code5),
       ':target_date' => $targetISODate,
     ]);
-    $row = $stmt->fetch();
-    return is_array($row) ? $row : null;
+    $rows = $stmt->fetchAll();
+    if (!$rows) {
+      return null;
+    }
+    foreach ($rows as $row) {
+      if (hasUsableFinancialValues($row)) {
+        return $row;
+      }
+    }
+
+    // 全部値なしなら、一番新しいレコードを返す
+    return $rows[0];
   } catch (Throwable $e) {
     if (!isReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry fetch fins: ' . $e->getMessage() . "\n");
     reconnectPdo($pdo);
     return fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
   }
+}
+
+function fetchLatestFinsSharesFromDb(PDO &$pdo, string $code5, string $targetISODate): ?array {
+  try {
+    ensurePdoAlive($pdo);
+    $sql = "SELECT *
+            FROM jquants_fins_summary
+            WHERE Code = :code
+              AND DiscDate <= :target_date
+            ORDER BY DiscDate DESC, DiscTime DESC, DiscNo DESC
+            LIMIT 30";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+      ':code' => normalizeCode5($code5),
+      ':target_date' => $targetISODate,
+    ]);
+
+    $rows = $stmt->fetchAll();
+    if (!$rows) return null;
+
+    foreach ($rows as $row) {
+      if (hasUsableSharesValue($row)) {
+        return $row;
+      }
+    }
+
+    return $rows[0];
+  } catch (Throwable $e) {
+    if (!isReconnectableDbError($e)) throw $e;
+    fwrite(STDERR, '[DB] reconnect and retry fetch fins shares: ' . $e->getMessage() . "\n");
+    reconnectPdo($pdo);
+    return fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
+  }
+}
+function selectLatestFinsSharesRowFromArray(array $rows, string $code5, string $targetISODate): ?array {
+  $candidates = [];
+  $code5 = normalizeCode5($code5);
+
+  foreach ($rows as $row) {
+    if (!is_array($row)) continue;
+    $code = normalizeCode5((string)($row['Code'] ?? ''));
+    if ($code !== $code5) continue;
+
+    try {
+      $discDate = normalizeDateToIso((string)($row['DiscDate'] ?? ''));
+    } catch (Throwable $e) {
+      continue;
+    }
+    if ($discDate > $targetISODate) continue;
+
+    $candidates[] = $row;
+  }
+
+  usort($candidates, function(array $a, array $b): int {
+    return strcmp(finsSortKey($b), finsSortKey($a));
+  });
+
+  foreach ($candidates as $row) {
+    if (hasUsableSharesValue($row)) {
+      return $row;
+    }
+  }
+
+  return $candidates[0] ?? null;
 }
 
 function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?array {
@@ -708,8 +841,43 @@ function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?a
   }
 }
 
+function fetchLatestPriceBarFromDb(PDO &$pdo, string $code4, string $targetISODate): ?array {
+  try {
+    ensurePdoAlive($pdo);
+
+    $sql = "SELECT asof_date, code, close, volume
+            FROM prices_eod
+            WHERE code = :code
+              AND asof_date <= :asof_date
+              AND close IS NOT NULL
+            ORDER BY asof_date DESC
+            LIMIT 1";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+      ':code' => normalizeDbCode4($code4),
+      ':asof_date' => $targetISODate,
+    ]);
+
+    $row = $stmt->fetch();
+    if (!is_array($row)) return null;
+
+    return [
+      'Date' => $row['asof_date'],
+      'Code' => $row['code'],
+      'AdjC' => $row['close'],
+      'AdjVo' => $row['volume'],
+    ];
+  } catch (Throwable $e) {
+    if (!isReconnectableDbError($e)) throw $e;
+    fwrite(STDERR, '[DB] reconnect and retry fetch latest price: ' . $e->getMessage() . "\n");
+    reconnectPdo($pdo);
+    return fetchLatestPriceBarFromDb($pdo, $code4, $targetISODate);
+  }
+}
+
 function selectLatestFinsRowFromArray(array $rows, string $code5, string $targetISODate): ?array {
-  $best = null;
+  $candidates = [];
   $code5 = normalizeCode5($code5);
 
   foreach ($rows as $row) {
@@ -724,12 +892,20 @@ function selectLatestFinsRowFromArray(array $rows, string $code5, string $target
     }
     if ($discDate > $targetISODate) continue;
 
-    if ($best === null || finsSortKey($row) >= finsSortKey($best)) {
-      $best = $row;
+     $candidates[] = $row;
+  }
+
+  usort($candidates, function(array $a, array $b): int {
+    return strcmp(finsSortKey($b), finsSortKey($a));
+  });
+
+  foreach ($candidates as $row) {
+    if (hasUsableFinancialValues($row)) {
+      return $row;
     }
   }
 
-  return $best;
+  return $candidates[0] ?? null;
 }
 
 function finsSortKey(array $row): string {
@@ -781,7 +957,8 @@ function loadSecurityCodeMasterSheet(): array {
 
   $out = [];
   $indexSkip = 0;
-  $etfSkip   = 0;
+  $etfCount  = 0;
+  $tpmSkip   = 0;
   for ($i = 1; $i < count($values); $i++) {
     $row = $values[$i];
     $codeRaw = trim((string)($row[$codeIdx] ?? ''));
@@ -790,13 +967,17 @@ function loadSecurityCodeMasterSheet(): array {
     $marketCode = trim((string)($row[$marketCodeIdx] ?? ''));
     
     $isIndex = ($marketCode === '-');
-    $isEtfLike = in_array($marketCode, ['109', '105'], true);
+    $isEtfLike = ($marketCode === '109');
 
     if ($isIndex) {
       $indexSkip++;
     }
+    if ($marketCode === '105') {
+      $tpmSkip++;
+      continue;
+    }
     if ($isEtfLike) {
-      $etfSkip++;
+      $etfCount++;
     }
 
     $code4 = normalizeDbCode4($codeRaw);
@@ -816,7 +997,7 @@ function loadSecurityCodeMasterSheet(): array {
       'is_etf_like' => $isEtfLike,
     ];
   }
-  return [$out, $indexSkip, $etfSkip];
+  return [$out, $indexSkip, $etfCount, $tpmSkip];
 }
 
 function loadSpreadsheetValues(string $fileName): array {
@@ -1000,7 +1181,7 @@ function enforceOutputFormats(array &$row): void {
   foreach (['時価総額','売上高','経常益','最終益','PER','PBR','信用倍率'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
-      $row[$key] = 'ー';
+      $row[$key] = CSV_DASH;
       continue;
     }
     $row[$key] = toFixed1Number($row[$key]);
@@ -1009,7 +1190,7 @@ function enforceOutputFormats(array &$row): void {
   foreach (['終値','前日比','騰落率','利回り'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
-      $row[$key] = 'ー';
+      $row[$key] = CSV_DASH;
       continue;
     }
     $row[$key] = toFixed2Number($row[$key]);
@@ -1018,11 +1199,62 @@ function enforceOutputFormats(array &$row): void {
   foreach (['出来高','信用売り残','信用買い残'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
-      $row[$key] = 'ー';
+      $row[$key] = CSV_DASH;
       continue;
     }
     $n = toFloatOrNull($row[$key]);
     $row[$key] = ($n === null) ? '' : (string)(int)round($n);
+  }
+  
+  // 日付は YYYY-MM-DD 形式で統一
+  foreach (['更新日', '信用日付'] as $key) {
+    if (!isset($row[$key]) || $row[$key] === '' || isDashValue($row[$key])) {
+      continue;
+    }
+    $row[$key] = normalizeDateToIso((string)$row[$key]);
+  }
+}
+
+function applyDashByWarningsAndType(array &$row, array $warnings, array $master): void {
+  $hasWarning = function(string $warning) use ($warnings): bool {
+    return in_array($warning, $warnings, true);
+  };
+
+  if ($hasWarning('財務情報J-Quants登録なし')) {
+    setDashValues($row, ['時価総額','売上高','経常益','最終益']);
+  }
+
+  if ($hasWarning('前営業日出来高なし')) {
+    setDashValues($row, ['前日比','騰落率']);
+  }
+
+  if ($hasWarning('当営業日出来高なし')) {
+    setDashValues($row, ['終値','前日比','騰落率','出来高']);
+  }
+  
+  if ($hasWarning('代替終値なし')) {
+    setDashValues($row, ['時価総額','PER','PBR','利回り']);
+  }
+
+  if ($hasWarning('信用残J-Quants登録なし')) {
+    setDashValues($row, ['信用日付','信用売り残','信用買い残','信用倍率']);
+  }
+
+  if (!empty($master['is_index'])) {
+    setDashValues($row, ['時価総額','売上高','経常益','最終益','信用日付','信用売り残','信用買い残','信用倍率']);
+    if (!isset($row['出来高']) || $row['出来高'] === '') {
+      $row['出来高'] = CSV_DASH;
+    }
+  }
+
+  if (!empty($master['is_etf_like'])) {
+    setDashValues($row, ['時価総額','売上高','経常益','最終益']);
+  }
+}
+
+function setDashValues(array &$row, array $keys): void {
+  foreach ($keys as $key) {
+    $row[$key] = CSV_DASH;
   }
 }
 
@@ -1138,7 +1370,7 @@ function nullableDecimal($raw): ?string {
 
 function isDashValue($raw): bool {
   $s = trim((string)$raw);
-  return $s === '-' || $s === '－' || $s === 'ー';
+  return $s === '-' || $s === '－' || $s === 'ー' || $s === CSV_DASH;
 }
 
 function toFloatOrNull($raw): ?float {
@@ -1163,4 +1395,14 @@ function toFixed2Number($raw) {
   $n = toFloatOrNull($raw);
   if ($n === null) return '';
   return (float)number_format($n, 2, '.', '');
+}
+function hasUsableFinancialValues(array $row): bool {
+
+    return
+      toFloatOrNull($row['Sales'] ?? null) !== null ||
+      toFloatOrNull($row['OdP'] ?? null) !== null ||
+      toFloatOrNull($row['NP'] ?? null) !== null;
+}
+function hasUsableSharesValue(array $row): bool {
+  return toFloatOrNull($row['ShOutFY'] ?? null) !== null;
 }
