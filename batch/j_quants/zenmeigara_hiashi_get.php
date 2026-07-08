@@ -65,13 +65,13 @@ try {
 
   // (1) 営業日カレンダー取得
   $calendarRows = loadCalendarMasterSheet();
-  $businessDays = buildRecentBusinessDays($calendarRows, $todayISO, 6);
+  $businessDays = buildRecentBusinessDays($calendarRows, $todayISO, 14);
   if (count($businessDays) === 0) {
     throw new RuntimeException('営業日カレンダーから営業日を取得できませんでした。');
   }
   echo '[INFO] recent business days: ' . implode(',', $businessDays) . "\n";
 
-  // (2) 直近6営業日分の株価情報取得（日付指定）
+  // (2) 直近14営業日分の株価情報取得（日付指定）
   $recentBarsByDateCode = [];
   foreach ($businessDays as $d) {
     $ymd = str_replace('-', '', $d);
@@ -125,26 +125,27 @@ try {
       if ($cmp > 0) {
         $needFullReplace = false;
 
-        // データ欠損・分割等チェック：DB直近5日 vs J-Quants直近6営業日のうち現在日を除く5日
+        // データ欠損・分割等チェック：DB直近5日 vs J-Quants直近14営業日の同日データ
         ensurePdoAlive($pdo);
-        $dbLast5 = fetchLastNCloseFromDb($pdo, $code4, 5);
-        $checkDays = array_values(array_filter($businessDays, function($d) use ($todayISO) {
-          return $d !== $todayISO;
-        }));
-        $checkDays = array_slice(array_reverse($checkDays), 0, 5); // 新しい順5日
+        $dbLast5 = fetchLastNPriceFromDb($pdo, $code4, 5);
 
-        if (count($dbLast5) > 0 && count($checkDays) > 0) {
-          foreach ($dbLast5 as $d => $dbClose) {
-            if (!in_array($d, $checkDays, true)) {
-              $needFullReplace = true;
-              break;
-            }
+        if (count($dbLast5) !== 5) {
+          $needFullReplace = true;
+        } else {
+          foreach ($dbLast5 as $d => $dbRow) {
             $webRow = $recentBarsByDateCode[$d][$code4] ?? null;
+
             if ($webRow === null) {
               $needFullReplace = true;
               break;
             }
-            if (compareNullableNumber($webRow['close'], $dbClose) !== 0) {
+
+            if (compareNullableNumber($webRow['close'], $dbRow['close']) !== 0) {
+              $needFullReplace = true;
+              break;
+            }
+
+            if (compareNullableNumber($webRow['volume'], $dbRow['volume']) !== 0) {
               $needFullReplace = true;
               break;
             }
@@ -168,11 +169,16 @@ try {
           continue;
         }
 
-        // チェックOK：現在日のデータだけDB更新
-        $todayRow = $recentBarsByDateCode[$todayISO][$code4] ?? null;
+        // チェックOK：DBにない日付全部
         $rows = [];
-        if ($todayRow !== null) {
-          $rows[] = $todayRow;
+
+        foreach ($businessDays as $d) {
+          if ($d <= $latest || $d > $todayISO) continue;
+
+          $row = $recentBarsByDateCode[$d][$code4] ?? null;
+          if ($row !== null) {
+            $rows[] = $row;
+          }
         }
         assertNoDuplicateDates($rows);
 
@@ -384,8 +390,8 @@ function fetchLatestMapFromDb(PDO $pdo): array {
   return $map;
 }
 
-function fetchLastNCloseFromDb(PDO $pdo, string $code, int $n): array {
-  $sql = "SELECT asof_date, close
+function fetchLastNPriceFromDb(PDO $pdo, string $code, int $n): array {
+  $sql = "SELECT asof_date, close, volume
           FROM prices_eod
           WHERE code = :code
           ORDER BY asof_date DESC
@@ -393,11 +399,15 @@ function fetchLastNCloseFromDb(PDO $pdo, string $code, int $n): array {
   $stmt = $pdo->prepare($sql);
   $stmt->execute([':code' => $code]);
   $rows = $stmt->fetchAll();
+
   $map = [];
   foreach ($rows as $r) {
     $d = (string)($r['asof_date'] ?? '');
     if ($d === '') continue;
-    $map[$d] = $r['close'] ?? null;
+    $map[$d] = [
+      'close'  => $r['close'] ?? null,
+      'volume' => $r['volume'] ?? null,
+    ];
   }
   return $map;
 }
