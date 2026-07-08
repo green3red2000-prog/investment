@@ -11,6 +11,10 @@ declare(strict_types=1);
  * - スプレッドシート:
  *   - 投資/プログラミング/GAS/マスタ/カレンダーマスタ
  *   - 投資/プログラミング/GAS/マスタ/証券コードマスタ
+ 
+ * 実行例:
+ *   php zenmeigara_hiashi_get.php
+ *   php zenmeigara_hiashi_get.php --recover-prices-all
  */
 
 require __DIR__ . '/conf/config.php';
@@ -42,6 +46,11 @@ const MASTER_FOLDER_PATH = ['投資','プログラミング','GAS','マスタ'];
 const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
 const SECURITY_CODE_MASTER_NAME = '証券コードマスタ';
 
+// =============================
+// 引数
+// =============================
+$args = parse_args($argv);
+$recoverPricesAll = isset($args['recover-prices-all']);
 
 // =============================
 // メイン
@@ -58,6 +67,7 @@ try {
   $pdo = buildPdo();
 
   echo "[INFO] date={$todayISO}\n";
+  echo '[INFO] recoverPricesAll=' . ($recoverPricesAll ? 'true' : 'false') . "\n";
 
   // (1) 営業日カレンダー取得
   $calendarRows = loadCalendarMasterSheet();
@@ -69,18 +79,26 @@ try {
 
   // (2) 直近14営業日分の株価情報取得（日付指定）
   $recentBarsByDateCode = [];
-  foreach ($businessDays as $d) {
-    $ymd = str_replace('-', '', $d);
-    echo "[API] daily bars date={$ymd}\n";
-    $rows = fetchJQuantsDailyBars(['date' => $ymd]);
-    $recentBarsByDateCode[$d] = indexBarsByCode($rows);
-    echo "[API] daily bars date={$ymd} count=" . count($rows) . "\n";
+  if ($recoverPricesAll) {
+    echo "[WARN] --recover-prices-all specified. skip step(2): recent daily bars fetch.\n";
+  } else {
+    foreach ($businessDays as $d) {
+      $ymd = str_replace('-', '', $d);
+      echo "[API] daily bars date={$ymd}\n";
+      $rows = fetchJQuantsDailyBars(['date' => $ymd]);
+      $recentBarsByDateCode[$d] = indexBarsByCode($rows);
+      echo "[API] daily bars date={$ymd} count=" . count($rows) . "\n";
+    }
   }
 
   // (3) DBデータ取得状況チェック
-  $latestMap = fetchLatestMapFromDb($pdo);
-  echo '[INFO] db latest map loaded: ' . count($latestMap) . "\n";
-
+  $latestMap = [];
+  if ($recoverPricesAll) {
+    echo "[WARN] --recover-prices-all specified. skip step(3): latest DB status check.\n";
+  } else {
+    $latestMap = fetchLatestMapFromDb($pdo);
+    echo '[INFO] db latest map loaded: ' . count($latestMap) . "\n";
+  }
   // (4) 証券コードマスタ取得
   $masterRows = loadSecurityCodeMasterSheet();
   echo '[INFO] master target codes loaded: ' . count($masterRows) . "\n";
@@ -102,9 +120,26 @@ try {
 
     try {
       echo '[INFO] (' . ($idx + 1) . '/' . count($masterRows) . ") code={$code4} apiCode={$apiCode}\n";
+      
+      if ($recoverPricesAll) {
+        $from = tenYearsAgoSameDay($todayISO);
+        $rows = fetchRowsForCodeFrom($apiCode, $code4, $from);
+        assertNoDuplicateDates($rows);
+        if (count($rows) === 0) {
+          throw new RuntimeException('JQUANTS_ERROR: 強制リカバリ全件洗替の取得が0件（削除中止）');
+        }
+
+        deletePricesByCodeWithReconnect($pdo, $code4);
+        $upsertTargetTotal += count($rows);
+        $upsertedTotal += bulkUpsertPricesEodWithReconnect($pdo, $rows);
+
+        $countReplace++;
+        $statusRows[] = [$code4, $todayISO, '強制リカバリ全件洗替：' . count($rows) . '件', maxAsofDate($rows) ?? ''];
+        continue;
+      }
 
       if ($latest === null || $latest === '') {
-        $from = tenYearsAgoNewYear($todayISO);
+        $from = tenYearsAgoSameDay($todayISO);
         $rows = fetchRowsForCodeFrom($apiCode, $code4, $from);
         assertNoDuplicateDates($rows);
 
@@ -149,7 +184,7 @@ try {
         }
 
         if ($needFullReplace) {
-          $from = tenYearsAgoNewYear($todayISO);
+          $from = tenYearsAgoSameDay($todayISO);
           $rows = fetchRowsForCodeFrom($apiCode, $code4, $from);
           assertNoDuplicateDates($rows);
           if (count($rows) === 0) {
@@ -208,6 +243,7 @@ try {
   $body =
     "処理を終了しました。\n\n" .
     '銘柄数: ' . count($masterRows) . " 件\n" .
+    '強制リカバリ全件洗替: ' . ($recoverPricesAll ? 'あり' : 'なし') . "\n" .
     "全件取得: {$countFull} 件\n" .
     "全件洗替: {$countReplace} 件\n" .
     "差分取得: {$countDiff} 件\n" .
@@ -607,6 +643,24 @@ function writeStatusCsv(string $csvPath, array $rows): void {
   fclose($fp);
 }
 
+function parse_args(array $argv): array {
+  $out = [];
+  foreach ($argv as $idx => $a) {
+    if ($idx === 0) continue;
+
+    if (preg_match('/^--([^=]+)=(.*)$/', $a, $m)) {
+      $out[$m[1]] = $m[2];
+      continue;
+    }
+
+    if (preg_match('/^--([^=]+)$/', $a, $m)) {
+      $out[$m[1]] = true;
+      continue;
+    }
+  }
+  return $out;
+}
+
 // =============================
 // 汎用補助
 // =============================
@@ -644,9 +698,9 @@ function buildRecentBusinessDays(array $calendarRows, string $todayISO, int $n):
   return array_slice($days, -$n);
 }
 
-function tenYearsAgoNewYear(string $todayISO): string {
-  return (new DateTime($todayISO))->modify('-10 years')->format('Y-m-d');
-}
+function tenYearsAgoSameDay(string $todayISO): string {
+   return (new DateTime($todayISO))->modify('-10 years')->format('Y-m-d');
+ }
 
 function normalizeDbCode4(string $code): string {
   $code = trim($code);
