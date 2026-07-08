@@ -22,6 +22,7 @@ declare(strict_types=1);
  *   php zenmeigara_basicinfo_get.php
  *   php zenmeigara_basicinfo_get.php --date=2026-06-24
  *   php zenmeigara_basicinfo_get.php --date=2026-06-24 --noupload
+ *   php zenmeigara_basicinfo_get.php --recover-fins-all --noupload
  */
 
 require __DIR__ . '/conf/config.php';
@@ -48,6 +49,7 @@ const JQUANTS_API_BURST_COUNT = 50;            // 50リクエストごと
 const JQUANTS_API_BURST_SLEEP_SEC = 60;        // 60秒休憩
 const JQUANTS_API_RETRY_SLEEP_SEC = 60;        // 429時60秒待機
 const JQUANTS_API_MAX_RETRY = 3;              // 最大3回リトライ
+const FINS_RECENT_BUSINESS_DAYS = 30;
 
 // DB設定（zenmeigara_hiashi_get.php 踏襲）
 const DB_HOST = '127.0.0.1';
@@ -104,6 +106,7 @@ class JQuantsApiException extends RuntimeException {}
 $args = parse_args($argv);
 $targetISODate = isset($args['date']) ? normalizeDateToIso((string)$args['date']) : date('Y-m-d');
 $noUpload = isset($args['noupload']);
+$recoverFinsAll = isset($args['recover-fins-all']);
 
 // =====================
 // メイン
@@ -119,18 +122,29 @@ try {
 
   $pdo = buildPdo();
 
-  // 1. 直近2営業日の取得
+  // 1. 直近営業日の取得
   $calendarRows = loadCalendarMasterSheet();
-  [$currentBizISO, $prevBizISO] = findRecentTwoBusinessDays($calendarRows, $targetISODate);
+  $recentBizDates = findRecentBusinessDays($calendarRows, $targetISODate, FINS_RECENT_BUSINESS_DAYS);
+  $currentBizISO = $recentBizDates[0];
+  $prevBizISO = $recentBizDates[1];
   $currentBizYmd = isoToYmd($currentBizISO);
   $prevBizYmd = isoToYmd($prevBizISO);
-  echo "[INFO] business dates current={$currentBizISO} prev={$prevBizISO}\n";
+  echo "[INFO] business dates current={$currentBizISO} prev={$prevBizISO} recent=" . count($recentBizDates) . "\n";
 
   // 2. 財務情報の取得（日次開示分）→ DB upsert
-  echo "[API] fins summary date={$targetISODate}\n";
-  $dailyFinsRows = jquantsGetAll(JQUANTS_FINS_SUMMARY_PATH, ['date' => $targetISODate]);
-  $dailyFinsUpserted = upsertFinsSummaryRowsWithReconnect($pdo, $dailyFinsRows);
-  echo '[INFO] fins daily rows=' . count($dailyFinsRows) . " upserted={$dailyFinsUpserted}\n";
+  $dailyFinsUpserted = 0;
+  if ($recoverFinsAll) {
+    echo "[WARN] --recover-fins-all specified. delete all jquants_fins_summary rows and skip daily fins fetch.\n";
+    deleteAllFinsSummaryRows($pdo);
+  } else {
+    foreach ($recentBizDates as $bizISODate) {
+      echo "[API] fins summary date={$bizISODate}\n";
+      $dailyFinsRows = jquantsGetAll(JQUANTS_FINS_SUMMARY_PATH, ['date' => $bizISODate]);
+      $upserted = upsertFinsSummaryRowsWithReconnect($pdo, $dailyFinsRows);
+      $dailyFinsUpserted += $upserted;
+      echo '[INFO] fins daily date=' . $bizISODate . ' rows=' . count($dailyFinsRows) . " upserted={$upserted}\n";
+    }
+  }
 
   // 3. 株価情報の取得
   // J-Quants daily bars は全銘柄一括取得の場合、from単独指定は不可。
@@ -230,13 +244,10 @@ try {
         $initialUpsertedTotal += $initialUpserted;
         echo '[INFO] fins initial code=' . $code5 . ' rows=' . count($codeFinsRows) . " upserted={$initialUpserted}\n";
 
-        $fin = selectLatestFinsRowFromArray($codeFinsRows, $code5, $targetISODate);
-        $finShares = selectLatestFinsSharesRowFromArray($codeFinsRows, $code5, $targetISODate);
-        if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
-          // 念のため、DBにも再問い合わせする。
-          $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
-          $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
-        }
+        // API取得結果はDBへ登録し、採用判定は必ずDBから再取得して行う。
+        // これにより、通常時も初回取得時も同じロジックで財務情報を採用する。
+        $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
+        $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
       }
 
       if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
@@ -404,7 +415,8 @@ try {
     "指数件数: {$indexSkip}\n" .
     "ETF等件数: {$etfCount}\n" .
     "TPM除外件数: {$tpmSkip}\n" .
-    "財務情報 当日開示 upsert: {$dailyFinsUpserted} 件\n" .
+   	'財務情報 強制リカバリ全件洗替: ' . ($recoverFinsAll ? 'あり' : 'なし') . "\n" .
+    "財務情報 直近30営業日 upsert: {$dailyFinsUpserted} 件\n" .
     "財務情報 初回API取得: {$initialFetchCount} 銘柄\n" .
     "財務情報 初回upsert: {$initialUpsertedTotal} 件\n";
 
@@ -607,6 +619,21 @@ function upsertFinsSummaryRowsWithReconnect(PDO &$pdo, array $rows): int {
     reconnectPdo($pdo);
     ensurePdoAlive($pdo);
     return upsertFinsSummaryRows($pdo, $rows);
+  }
+}
+
+function deleteAllFinsSummaryRows(PDO &$pdo): void {
+  try {
+    ensurePdoAlive($pdo);
+    $pdo->exec('DELETE FROM jquants_fins_summary');
+    echo "[INFO] jquants_fins_summary all rows deleted.\n";
+  } catch (Throwable $e) {
+    if (!isReconnectableDbError($e)) throw $e;
+    fwrite(STDERR, '[DB] reconnect and retry delete fins summary: ' . $e->getMessage() . "\n");
+    reconnectPdo($pdo);
+    ensurePdoAlive($pdo);
+    $pdo->exec('DELETE FROM jquants_fins_summary');
+    echo "[INFO] jquants_fins_summary all rows deleted.\n";
   }
 }
 
@@ -1068,7 +1095,7 @@ function findSpreadsheetFileIdByName(Google\Service\Drive $drive, string $folder
 // =====================
 // 営業日・相場データ整形
 // =====================
-function findRecentTwoBusinessDays(array $calendarRows, string $targetISODate): array {
+function findRecentBusinessDays(array $calendarRows, string $targetISODate, int $count): array {
   $businessDates = [];
 
   foreach ($calendarRows as $row) {
@@ -1080,13 +1107,13 @@ function findRecentTwoBusinessDays(array $calendarRows, string $targetISODate): 
   }
 
   $dates = array_keys($businessDates);
-  sort($dates);
+  rsort($dates);
 
-  if (count($dates) < 2) {
-    throw new RuntimeException('カレンダーマスタから直近2営業日を取得できません。');
+  if (count($dates) < $count) {
+    throw new RuntimeException('カレンダーマスタから直近' . $count . '営業日を取得できません。');
   }
 
-  return [$dates[count($dates) - 1], $dates[count($dates) - 2]];
+  return array_slice($dates, 0, $count);
 }
 
 function fetchRecentMarginInterestRows(array $calendarRows, string $currentBizISO, int $lookbackDays): array {
