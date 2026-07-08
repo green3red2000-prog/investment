@@ -14,6 +14,7 @@ declare(strict_types=1);
  */
 
 require __DIR__ . '/conf/config.php';
+require __DIR__ . '/lib/j_quants_common.php';
 require '/opt/invest/scraping/lib/scraping_common.php';
 
 // Google API クライアント。scraping_common.php の upload_outputs_and_cleanup() と同じ vendor を使う。
@@ -25,9 +26,8 @@ date_default_timezone_set('Asia/Tokyo');
 // 設定
 // =============================
 const JOB_NAME = '全銘柄日足取得';
-const JQUANTS_DAILY_BARS_URL = 'https://api.jquants.com/v2/equities/bars/daily';
+const JQUANTS_DAILY_BARS_PATH = '/v2/equities/bars/daily';
 const OUTPUT_DIR = '/opt/invest/j_quants/tmp';
-const HTTP_TIMEOUT_SEC = 60;
 const SQL_CHUNK_ROWS = 100;
 
 // DB設定（既存 zenmeigara_hiashi_get.php 踏襲）
@@ -42,10 +42,6 @@ const MASTER_FOLDER_PATH = ['投資','プログラミング','GAS','マスタ'];
 const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
 const SECURITY_CODE_MASTER_NAME = '証券コードマスタ';
 
-// =============================
-// 例外クラス
-// =============================
-class JQuantsApiException extends RuntimeException {}
 
 // =============================
 // メイン
@@ -252,65 +248,7 @@ function fetchRowsForCodeFrom(string $apiCode, string $dbCode4, string $fromISO)
 }
 
 function fetchJQuantsDailyBars(array $params): array {
-  $all = [];
-  $paginationKey = null;
-
-  do {
-    $query = $params;
-    if ($paginationKey !== null && $paginationKey !== '') {
-      $query['pagination_key'] = $paginationKey;
-    }
-
-    $url = JQUANTS_DAILY_BARS_URL . '?' . http_build_query($query);
-    $json = jquantsGetJson($url);
-
-    $data = $json['data'] ?? null;
-    if (!is_array($data)) {
-      throw new JQuantsApiException('response data is not array: ' . $url);
-    }
-
-    foreach ($data as $row) {
-      if (is_array($row)) $all[] = $row;
-    }
-
-    $paginationKey = isset($json['pagination_key']) ? (string)$json['pagination_key'] : null;
-  } while ($paginationKey !== null && $paginationKey !== '');
-
-  return $all;
-}
-
-function jquantsGetJson(string $url): array {
-  $ch = curl_init();
-  curl_setopt_array($ch, [
-    CURLOPT_URL => $url,
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT => HTTP_TIMEOUT_SEC,
-    CURLOPT_HTTPHEADER => [
-      'x-api-key: ' . JQUANTS_API_KEY,
-      'Accept: application/json',
-    ],
-  ]);
-
-  $response = curl_exec($ch);
-  if ($response === false) {
-    $err = curl_error($ch);
-    curl_close($ch);
-    throw new JQuantsApiException('curl error: ' . $err);
-  }
-
-  $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-  curl_close($ch);
-
-  $json = json_decode((string)$response, true);
-  if (!is_array($json)) {
-    throw new JQuantsApiException('JSON decode error. HTTP=' . $httpCode . ' body=' . mb_substr((string)$response, 0, 500));
-  }
-
-  if ($httpCode < 200 || $httpCode >= 300) {
-    throw new JQuantsApiException('HTTP ' . $httpCode . ' body=' . json_encode($json, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-  }
-
-  return $json;
+  return jquantsGetAll(JQUANTS_DAILY_BARS_PATH, $params);
 }
 
 function normalizeJQuantsBarRow(array $row, string $dbCode4): ?array {
