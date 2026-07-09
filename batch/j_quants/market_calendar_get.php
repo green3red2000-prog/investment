@@ -11,6 +11,7 @@ declare(strict_types=1);
  */
 
 require __DIR__ . '/conf/config.php';
+require __DIR__ . '/lib/j_quants_common.php';
 require '/opt/invest/scraping/lib/scraping_common.php';
 
 date_default_timezone_set('Asia/Tokyo');
@@ -19,9 +20,7 @@ date_default_timezone_set('Asia/Tokyo');
 // 設定
 // =============================
 const JOB_NAME = 'カレンダー取得';
-const JQUANTS_MARKET_CALENDAR_URL = 'https://api.jquants.com/v2/markets/calendar';
 const OUTPUT_DIR = '/opt/invest/j_quants/tmp';
-const HTTP_TIMEOUT_SEC = 60;
 
 // =============================
 // メイン
@@ -34,7 +33,7 @@ try {
     $today = new DateTime('now');
     $todayIso = $today->format('Y-m-d');
 
-    $fromDate = getFirstDayOfMonth((clone $today)->modify('-1 month'));
+    $fromDate = getFirstDayOfMonth((clone $today)->modify('-3 months'));
     $toDate   = getLastDayOfMonth((clone $today)->modify('+3 months'));
 
     $fromApi = $fromDate->format('Ymd');
@@ -108,54 +107,7 @@ function fetchMarketCalendar(string $from, string $to): array
         'to'   => $to,
     ];
 
-    $url = JQUANTS_MARKET_CALENDAR_URL . '?' . http_build_query($params);
-
-    echo "URL : {$url}" . PHP_EOL;
-
-    $ch = curl_init();
-    if ($ch === false) {
-        throw new RuntimeException('curl_init に失敗しました。');
-    }
-
-    curl_setopt_array($ch, [
-        CURLOPT_URL => $url,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => HTTP_TIMEOUT_SEC,
-        CURLOPT_HTTPHEADER => [
-            'x-api-key: ' . JQUANTS_API_KEY,
-            'Accept: application/json',
-        ],
-    ]);
-
-    $response = curl_exec($ch);
-
-    if ($response === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new RuntimeException('[J-Quants] curl error: ' . $err);
-    }
-
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    echo "HTTP Status : {$httpCode}" . PHP_EOL;
-
-    $json = json_decode((string)$response, true);
-    if (!is_array($json)) {
-        throw new RuntimeException('[J-Quants] JSON decode error: ' . json_last_error_msg());
-    }
-
-    if ($httpCode < 200 || $httpCode >= 300) {
-        $body = json_encode($json, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        throw new RuntimeException("[J-Quants] HTTP {$httpCode}: {$body}");
-    }
-
-    $data = $json['data'] ?? [];
-    if (!is_array($data)) {
-        throw new RuntimeException('[J-Quants] レスポンス data が配列ではありません。');
-    }
-
-    return $data;
+    return jquantsGetAll('/v2/markets/calendar', $params);
 }
 
 // =============================
@@ -230,6 +182,7 @@ function getLastDayOfMonth(DateTime $date): DateTime
     $date->setTime(0, 0, 0);
     return $date;
 }
+
 function formatIsoDate(string $date): string
 {
     $date = trim($date);
