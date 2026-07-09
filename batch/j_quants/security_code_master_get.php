@@ -11,6 +11,7 @@ declare(strict_types=1);
  */
 
 require __DIR__ . '/conf/config.php';
+require __DIR__ . '/lib/j_quants_common.php';
 require '/opt/invest/scraping/lib/scraping_common.php';
 
 date_default_timezone_set('Asia/Tokyo');
@@ -19,9 +20,7 @@ date_default_timezone_set('Asia/Tokyo');
 // 設定
 // =============================
 const JOB_NAME = '証券コード取得';
-const JQUANTS_EQUITIES_MASTER_URL = 'https://api.jquants.com/v2/equities/master';
 const OUTPUT_DIR = '/opt/invest/j_quants/tmp';
-const HTTP_TIMEOUT_SEC = 60;
 
 // =============================
 // メイン
@@ -52,7 +51,7 @@ try {
     }
 
     // レスポンス上の情報適用年月日。通常は全行同じ想定。
-    $asofDate = getRepresentativeDate($rows, $today);
+    $asofDate = normalizeDateHyphen(getRepresentativeDate($rows, $today));
 
     echo "asof_date={$asofDate}" . PHP_EOL;
     echo "count={$count}" . PHP_EOL;
@@ -95,58 +94,9 @@ try {
  */
 function fetchEquitiesMaster(string $date): array
 {
-    $params = [
+    return jquantsGetAll('/v2/equities/master', [
         'date' => $date,
-    ];
-
-    $url = JQUANTS_EQUITIES_MASTER_URL . '?' . http_build_query($params);
-
-    echo "URL : {$url}" . PHP_EOL;
-
-    $ch = curl_init();
-    if ($ch === false) {
-        throw new RuntimeException('curl_init に失敗しました。');
-    }
-
-    curl_setopt_array($ch, [
-        CURLOPT_URL => $url,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => HTTP_TIMEOUT_SEC,
-        CURLOPT_HTTPHEADER => [
-            'x-api-key: ' . JQUANTS_API_KEY,
-            'Accept: application/json',
-        ],
     ]);
-
-    $response = curl_exec($ch);
-
-    if ($response === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new RuntimeException('[J-Quants] curl error: ' . $err);
-    }
-
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    echo "HTTP Status : {$httpCode}" . PHP_EOL;
-
-    $json = json_decode((string)$response, true);
-    if (!is_array($json)) {
-        throw new RuntimeException('[J-Quants] JSON decode error: ' . json_last_error_msg());
-    }
-
-    if ($httpCode < 200 || $httpCode >= 300) {
-        $body = json_encode($json, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        throw new RuntimeException("[J-Quants] HTTP {$httpCode}: {$body}");
-    }
-
-    $data = $json['data'] ?? [];
-    if (!is_array($data)) {
-        throw new RuntimeException('[J-Quants] レスポンス data が配列ではありません。');
-    }
-
-    return $data;
 }
 
 // =============================
