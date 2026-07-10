@@ -216,11 +216,13 @@ try {
       
       $margin = $marginByCode[$code5] ?? $marginByCode[$code4] ?? null;
       
-      // 当営業日または前営業日の株価データが存在しない銘柄は、
-      // 上場前・上場直後・ETF/ETN等の特殊コード・データ未収録の可能性があるためCSV出力対象外としてスキップする。
-      if ($curBar === null || $prevBar === null) {
+      // 当営業日の株価データが存在しない銘柄は、
+      // 上場前・ETF/ETN等の特殊コード・データ未収録の可能性があるためCSV出力対象外としてスキップする。
+      // 前営業日の株価データが存在しない場合は、上場当日の可能性があるためスキップせず、
+      // 前営業日出来高なしとしてCSVレコードを算出する。
+      if ($curBar === null) {
         $skip++;
-        fwrite(STDERR, "[SKIP] code={$code4} code5={$code5} 株価データなし\n");
+        fwrite(STDERR, "[SKIP] code={$code4} code5={$code5} 当営業日株価データなし\n");
         continue;
       }
 
