@@ -4,11 +4,13 @@
  *
  * 仕様:
  * - 証券コードマスタ（Drive）を読み、1行ずつ処理（参照のみ：書き込みはしない）
- * - 市場・商品区分が「プライム（内国株式）」「スタンダード（内国株式）」「グロース（内国株式）」のみ対象
+ * - 市場区分コードが「111」「112」「113」の銘柄のみ対象
  * - https://shikiho.toyokeizai.net/stocks/{code} を http_get_text_browser() で取得してパース
- * - (5)のCSV出力に「更新日」「実行結果」を書き込む（正常/エラー/中断）
+ * - (5)のCSV出力に「四季報更新日」「実行結果」を書き込む（正常/四季報読み込みエラー）
+ * - その他の処理中断時はログにFATALを出力して異常終了
  * - CSV/TXT を /opt/invest/scraping/tmp に出力（CSVはUTF-8 BOM付き）
- * - Driveへアップロード後、ローカル削除（upload_outputs_and_cleanup を使用）
+ * - 通常実行時はDriveへアップロード後、ローカル削除
+ * - --test_run指定時は四季報アクセスを3件で終了し、Driveアップロードは行わない
  *
  * cron想定: 毎週金曜 18:00
  */
@@ -29,14 +31,33 @@ $MASTER_SHEET_NAME_FIXED = ''; // 例: '証券コードマスタ'。空なら1�
 
 $TMP_DIR = '/opt/invest/scraping/tmp';
 
-// 対象市場
-$TARGET_MARKETS = array(
-  'プライム（内国株式）',
-  'スタンダード（内国株式）',
-  'グロース（内国株式）',
+// ===== 実行引数 =====
+$testRun = false;
+$testLimit = 3;
+
+$args = array_slice($argv, 1);
+foreach ($args as $arg) {
+  if ($arg === '--test_run') {
+    $testRun = true;
+    continue;
+  }
+
+  fwrite(STDERR, "FATAL: 不明な引数です: {$arg}\n");
+  exit(1);
+}
+
+if ($testRun) {
+  echo "[TEST] test run enabled. limit={$testLimit}\n";
+}
+
+// 対象市場区分コード
+$TARGET_MARKET_CODES = array(
+  '111',
+  '112',
+  '113',
 );
 
-// 次の銘柄までの待機（秒）※揺らぎ
+// 次の四季報アクセス対象銘柄までの待機（秒）※揺らぎ
 $SLEEP_SEC_MIN = 15;
 $SLEEP_SEC_MAX = 20;
 
@@ -46,10 +67,6 @@ $todayYmdSlash = date('Y/m/d');
 
 $csvPath = rtrim($TMP_DIR, '/')."/{$JOB_NAME}_{$todayYmd}.csv";
 $txtPath = rtrim($TMP_DIR, '/')."/{$JOB_NAME}_メッセージ_{$todayYmd}.txt";
-
-// ===== テスト用 =====
-define('TEST_MODE', false);   // true: テスト / false: 本番
-define('TEST_LIMIT', 3);     // 実処理する銘柄数（スキップ除外）
 
 // ===== ユーティリティ =====
 function norm_ws($s) {
@@ -158,7 +175,17 @@ function parse_shikiho_html($html) {
   // 決算発表予定日
   $planned = '';
   $n = $xp->query("//div[contains(@class,'planned-disclosure-date')]//span[contains(@class,'date')]");
-  if ($n && $n->length > 0) $planned = norm_ws($n->item(0)->textContent);
+  if ($n && $n->length > 0) {
+    $planned = norm_ws($n->item(0)->textContent);
+
+    // yyyy/MM/dd → yyyy-MM-dd
+    if (preg_match('/^\d{4}\/\d{1,2}\/\d{1,2}$/', $planned)) {
+      $dt = DateTime::createFromFormat('!Y/n/j', $planned);
+      if ($dt !== false) {
+        $planned = $dt->format('Y-m-d');
+      }
+    }
+  }
 
   // 特色 / 連結事業（ラベル一致ではなく dd の並び順で取得する）
   $feature = '';
@@ -293,7 +320,10 @@ try {
   }
 
   // 必須列（入力）
-  $needCols = array('証券コード', '市場・商品区分');
+  $needCols = array(
+    '証券コード',
+    '市場区分コード',
+  );
   foreach ($needCols as $nc) {
     if (!isset($col[$nc])) throw new RuntimeException("必須列が見つかりません: {$nc}");
   }
@@ -304,16 +334,16 @@ try {
 
   // counters
   $testProcessed = 0;   // 実処理数（スキップ除外）
-  $totalTargets = 0;    // 対象市場で実処理した銘柄数（テストなら最大TEST_LIMIT）
+  $totalTargets = 0;    // 処理件数・スキップ件数・エラー件数の合計
   $okCount = 0;         // 正常
   $skipCount = 0;       // 市場対象外スキップ
-  $errCount = 0;        // 正常以外（四季報読み込み失敗 / 処理中断）
+  $errCount = 0;        // 四季報読み込み失敗
 
   // CSV出力用
   $csvOut = array();
   $csvOut[] = array(
     '証券コード',
-    '更新日',
+    '四季報更新日',
     '実行結果',
     '決算発表予定日',
     '特色',
@@ -336,16 +366,18 @@ try {
 
     $code = isset($row[$col['証券コード']]) ? trim((string)$row[$col['証券コード']]) : '';
     if ($code === '') break; // 空行で終了
+    	
+    $marketCode = isset($row[$col['市場区分コード']])
+      ? trim((string)$row[$col['市場区分コード']])
+      : '';
     
     // ---- テストモード：実処理数制限（スキップ除外） ----
-    if (TEST_MODE && $testProcessed >= TEST_LIMIT) {
+    if ($testRun && $testProcessed >= $testLimit) {
       echo "[TEST] limit reached ({$testProcessed}). stop loop.\n";
       break;
     }
     
     $totalTargets++;
-
-    $market = isset($row[$col['市場・商品区分']]) ? trim((string)$row[$col['市場・商品区分']]) : '';
 
     $updateDate = $todayYmd; // yyyy-MM-dd
     $result = '';
@@ -360,8 +392,8 @@ try {
     $cheap = '';
     $up = '';
 
-    // 対象市場チェック（スキップ）
-    if (!in_array($market, $TARGET_MARKETS, true)) {
+    // 対象市場区分コードチェック（スキップ）
+    if (!in_array($marketCode, $TARGET_MARKET_CODES, true)) {
       $skipCount++;
       $result = 'スキップ（市場対象外）';
 
@@ -430,7 +462,7 @@ try {
 
     $testProcessed++;
 
-    // CSV追記（★更新日/実行結果はCSVにのみ書く）
+    // CSV追記（四季報更新日／実行結果はCSVにのみ書く）
     $csvOut[] = array(
       $code,
       $updateDate,
@@ -446,8 +478,14 @@ try {
       $cheap,
       $up,
     );
+    
+    // テスト実行時は四季報アクセスを3件実施した時点でループを終了
+    if ($testRun && $testProcessed >= $testLimit) {
+      echo "[TEST] limit reached ({$testProcessed}). stop loop.\n";
+      break;
+    }
 
-    $sec = random_int($SLEEP_SEC_MIN, $SLEEP_SEC_MAX) + (random_int(0, 1000) / 1000);
+    $sec = random_int($SLEEP_SEC_MIN, $SLEEP_SEC_MAX) + (random_int(0, 999) / 1000);
     usleep((int)($sec * 1_000_000));
   }
 
@@ -493,12 +531,21 @@ try {
   // -------------------------------
   // (7) Driveアップロード → ローカル削除
   // -------------------------------
-  if (!function_exists('upload_outputs_and_cleanup')) {
-    throw new RuntimeException("upload_outputs_and_cleanup() が見つかりません（scraping_common.php を確認）");
-  }
-  upload_outputs_and_cleanup($JOB_NAME, $todayYmd, $csvPath, $txtPath);
+  if ($testRun) {
+    echo "[TEST] Driveアップロードをスキップしました。\n";
+    echo "[TEST] ローカルファイルを保持します:\n";
+    echo "- {$csvPath}\n";
+    echo "- {$txtPath}\n";
+  } else {
+    if (!function_exists('upload_outputs_and_cleanup')) {
+      throw new RuntimeException("upload_outputs_and_cleanup() が見つかりません（scraping_common.php を確認）");
+    }
 
-  echo "[OK] {$JOB_NAME} finished. targets={$totalTargets} ok={$okCount} skip={$skipCount} err={$errCount}\n";
+    upload_outputs_and_cleanup($JOB_NAME, $todayYmd, $csvPath, $txtPath);
+  }
+
+  $mode = $testRun ? 'test' : 'normal';
+  echo "[OK] {$JOB_NAME} finished. mode={$mode} targets={$totalTargets} ok={$okCount} skip={$skipCount} err={$errCount}\n";
   exit(0);
 
 } catch (Exception $e) {
