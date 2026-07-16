@@ -2,20 +2,20 @@
 declare(strict_types=1);
 
 /**
- * “úŸHTMLæ eƒWƒ‡ƒu
+ * æ—¥æ¬¡HTMLå–è¾¼ è¦ªã‚¸ãƒ§ãƒ–
  *
- * cron‹N“®F10•ª–ˆ
+ * ä¸Šä½è¦ªã‚¸ãƒ§ãƒ–ã‹ã‚‰èµ·å‹•
  *
- * ’Êí‹N“®F
- *   - /opt/invest/scraping/data/complete_upload_daily_market_snapshot.txt ‚ğŠm”F
- *   - ’†g‚ª–{“úYYYY-MM-DD‚Å‚È‚¯‚ê‚ÎI—¹
- *   - –{“úYYYY-MM-DD‚ğˆø”‚É‚µ‚ÄqPHP‚ğ‡”Ô‚ÉÀs
- *   - ‘S‚Ä¬Œ÷‚µ‚½‚ç complete_upload_daily_market_snapshot.txt ‚ğíœ
+ * é€šå¸¸èµ·å‹•ï¼š
+ *   - /opt/invest/scraping/state/upload/complete_upload_daily_market_snapshot_YYYYMMDD.txt ã‚’ç¢ºèª
+ *   - ä¸­èº«ãŒæœ¬æ—¥YYYY-MM-DDã§ãªã‘ã‚Œã°çµ‚äº†
+ *   - å­PHPã‚’é€šå¸¸èµ·å‹•ãƒ¢ãƒ¼ãƒ‰ã§é †ç•ªã«å®Ÿè¡Œ
+ *   - å®Œäº†ãƒãƒ¼ã‚«ãƒ¼ãƒ•ã‚¡ã‚¤ãƒ«ã¯å‰Šé™¤ã›ãšã€ãã®ã¾ã¾æ®‹ã™
  *
- * ƒŠƒJƒoƒŠ‹N“®—áF
+ * ãƒªã‚«ãƒãƒªèµ·å‹•ä¾‹ï¼š
  *   php run_daily_market_snapshot_jobs.php YYYY-MM-DD
  *
- * ƒŠƒJƒoƒŠ‹N“®FˆÈ‰º‚ğ‡ŸÀsB
+ * ãƒªã‚«ãƒãƒªèµ·å‹•æ™‚ï¼šä»¥ä¸‹ã‚’é †æ¬¡å®Ÿè¡Œã€‚
  *   daily_market_snapshot.php --date=2026-06-15 --force
  *   kabuhoyu_sokuhou.php 2026-06-15
  *   tekiji_disclosure.php 2026-06-15
@@ -23,18 +23,15 @@ declare(strict_types=1);
  *   pts_morning_news.php 2026-06-15 --force
  *   index_eod_import_from_saved_html.php --target_date=2026-06-15
  *   
- * 	 ¦ƒŠƒJƒoƒŠ‹N“®‚ÍAcomplete_upload_daily_market_snapshot.txt‚ª–³‚­‚Ä‚à“®ì‚µ‚Ü‚·B
- * ƒƒOF
- *   cron‘¤‚ÅƒŠƒ_ƒCƒŒƒNƒg‚µ‚Äo—Í‚·‚é
+ *   â€»ãƒªã‚«ãƒãƒªèµ·å‹•æ™‚ã¯ã€æ—¥ä»˜ä»˜ãã®å®Œäº†ãƒãƒ¼ã‚«ãƒ¼ãƒ•ã‚¡ã‚¤ãƒ«ãŒç„¡ãã¦ã‚‚å‹•ä½œã—ã¾ã™ã€‚
+ * ãƒ­ã‚°ï¼š
+ *   ä¸Šä½è¦ªã‚¸ãƒ§ãƒ–å´ã§ãƒªãƒ€ã‚¤ãƒ¬ã‚¯ãƒˆã—ã¦å‡ºåŠ›ã™ã‚‹
  */
 
 date_default_timezone_set('Asia/Tokyo');
 
 $baseDir = __DIR__;
-$dataDir = '/opt/invest/scraping/data';
-
-$uploadCompleteFile = "{$dataDir}/complete_upload_daily_market_snapshot.txt";
-
+$uploadStateDir = '/opt/invest/scraping/state/upload';
 
 function logMsg(string $msg): void {
   $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . PHP_EOL;
@@ -54,7 +51,7 @@ function readTrimmedFile(string $path): ?string {
   return trim($s);
 }
 
-function runChild(string $scriptPath,array $args = []): void {
+function runChild(string $scriptPath, array $args = []): void {
 
   $cmdParts = [
     PHP_BINARY,
@@ -88,9 +85,11 @@ $targetDate = $isRecovery ? $argDate : $today;
 
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $targetDate)) {
     throw new InvalidArgumentException(
-        "“ú•t‚Íyyyy-MM-ddŒ`®‚Åw’è‚µ‚Ä‚­‚¾‚³‚¢: {$targetDate}"
+        "æ—¥ä»˜ã¯yyyy-MM-ddå½¢å¼ã§æŒ‡å®šã—ã¦ãã ã•ã„: {$targetDate}"
     );
 }
+$todayCompact = str_replace('-', '', $today);
+$uploadCompleteFile = "{$uploadStateDir}/complete_upload_daily_market_snapshot_{$todayCompact}.txt";
 
 logMsg("===== parent job start: targetDate={$targetDate}, recovery=" . ($isRecovery ? 'yes' : 'no') . " =====");
 
@@ -182,11 +181,6 @@ try {
     }
 
     runChild($scriptPath, $extraArgs);
-  }
-
-  if (!$isRecovery && is_file($uploadCompleteFile)) {
-    unlink($uploadCompleteFile);
-    logMsg("upload complete file deleted: {$uploadCompleteFile}");
   }
 
   logMsg("===== parent job done =====");

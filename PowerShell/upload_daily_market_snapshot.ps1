@@ -35,8 +35,8 @@ $LocalDir = Join-Path $LocalRoot $Today
 $RemoteRoot = '/opt/invest/scraping/data'
 $RemoteDir = "$RemoteRoot/$Today"
 
-$RemoteCompleteFile = '/opt/invest/scraping/data/complete_upload_daily_market_snapshot.txt'
-$LocalCompleteFile = Join-Path $env:TEMP "complete_upload_daily_market_snapshot.txt"
+$RemoteCompleteFile = "/opt/invest/scraping/state/upload/complete_upload_daily_market_snapshot_${Today}.txt"
+$LocalCompleteFile = Join-Path $env:TEMP "complete_upload_daily_market_snapshot_$Today.txt"
 
 if (-not (Test-Path $LocalDir)) {
   throw "local dir not found: $LocalDir"
