@@ -34,13 +34,6 @@ const JQUANTS_DAILY_BARS_PATH = '/v2/equities/bars/daily';
 const OUTPUT_DIR = '/opt/invest/j_quants/tmp';
 const SQL_CHUNK_ROWS = 100;
 
-// DB設定（既存 zenmeigara_hiashi_get.php 踏襲）
-const DB_HOST = '127.0.0.1';
-const DB_PORT = 3306;
-const DB_NAME = 'stocks';
-const DB_USER = 'apiuser';
-const DB_PASS = 'G&TgY7Ubq5weU365a6HgxGCshU&%75MKMun8m9kMAr3S&a';
-
 // Drive上のマスタ配置
 const MASTER_FOLDER_PATH = ['投資','プログラミング','GAS','マスタ'];
 const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
@@ -64,7 +57,7 @@ try {
   $csvPath = OUTPUT_DIR . '/' . JOB_NAME . '_' . $todayISO . '.csv';
   $txtPath = OUTPUT_DIR . '/' . JOB_NAME . '_メッセージ_' . $todayISO . '.txt';
 
-  $pdo = buildPdo();
+  $pdo = jqBuildPdo();
 
   echo "[INFO] date={$todayISO}\n";
   echo '[INFO] recoverPricesAll=' . ($recoverPricesAll ? 'true' : 'false') . "\n";
@@ -157,7 +150,7 @@ try {
         $needFullReplace = false;
 
         // データ欠損・分割等チェック：DB直近5日 vs J-Quants直近14営業日の同日データ
-        ensurePdoAlive($pdo);
+        jqEnsurePdoAlive($pdo);
         $dbLast5 = fetchLastNPriceFromDb($pdo, $code4, 5);
 
         if (count($dbLast5) !== 5) {
@@ -318,38 +311,6 @@ function indexBarsByCode(array $rawRows): array {
 // =============================
 // DB / PDO
 // =============================
-function buildPdo(): PDO {
-  $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', DB_HOST, DB_PORT, DB_NAME);
-  return new PDO($dsn, DB_USER, DB_PASS, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES => false,
-  ]);
-}
-
-function reconnectPdo(PDO &$pdo): void {
-  $pdo = buildPdo();
-}
-
-function ensurePdoAlive(PDO &$pdo): void {
-  try {
-    $pdo->query('SELECT 1');
-  } catch (Throwable $e) {
-    if (isReconnectableDbError($e)) {
-      fwrite(STDERR, '[DB] reconnect PDO: ' . $e->getMessage() . "\n");
-      reconnectPdo($pdo);
-      return;
-    }
-    throw $e;
-  }
-}
-
-function isReconnectableDbError(Throwable $e): bool {
-  $msg = $e->getMessage();
-  return stripos($msg, 'server has gone away') !== false ||
-         stripos($msg, 'Lost connection') !== false;
-}
-
 function fetchLatestMapFromDb(PDO $pdo): array {
   $sql = "SELECT code, MAX(asof_date) AS latest_asof_date
           FROM prices_eod
@@ -394,26 +355,26 @@ function deletePricesByCode(PDO $pdo, string $code): void {
 
 function deletePricesByCodeWithReconnect(PDO &$pdo, string $code): void {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
     deletePricesByCode($pdo, $code);
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry delete: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
-    ensurePdoAlive($pdo);
+    jqReconnectPdo($pdo);
+    jqEnsurePdoAlive($pdo);
     deletePricesByCode($pdo, $code);
   }
 }
 
 function bulkUpsertPricesEodWithReconnect(PDO &$pdo, array $rows): int {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
     return bulkUpsertPricesEod($pdo, $rows);
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry upsert: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
-    ensurePdoAlive($pdo);
+    jqReconnectPdo($pdo);
+    jqEnsurePdoAlive($pdo);
     return bulkUpsertPricesEod($pdo, $rows);
   }
 }

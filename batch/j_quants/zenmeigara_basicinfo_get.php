@@ -45,13 +45,6 @@ const JQUANTS_DAILY_BARS_PATH = '/v2/equities/bars/daily';
 const JQUANTS_MARGIN_INTEREST_PATH = '/v2/markets/margin-interest';
 const FINS_RECENT_BUSINESS_DAYS = 30;
 
-// DB設定（zenmeigara_hiashi_get.php 踏襲）
-const DB_HOST = '127.0.0.1';
-const DB_PORT = 3306;
-const DB_NAME = 'stocks';
-const DB_USER = 'apiuser';
-const DB_PASS = 'G&TgY7Ubq5weU365a6HgxGCshU&%75MKMun8m9kMAr3S&a';
-
 // Drive上のマスタ配置
 const MASTER_FOLDER_PATH = ['投資','プログラミング','GAS','マスタ'];
 const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
@@ -113,7 +106,7 @@ try {
   echo "[INFO] date={$targetISODate}\n";
   echo '[INFO] noUpload=' . ($noUpload ? 'true' : 'false') . "\n";
 
-  $pdo = buildPdo();
+  $pdo = jqBuildPdo();
 
   // 1. 直近営業日の取得
   $calendarRows = loadCalendarMasterSheet();
@@ -483,61 +476,29 @@ function parse_args(array $argv): array {
 // =====================
 // DB / PDO
 // =====================
-function buildPdo(): PDO {
-  $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', DB_HOST, DB_PORT, DB_NAME);
-  return new PDO($dsn, DB_USER, DB_PASS, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES => false,
-  ]);
-}
-
-function reconnectPdo(PDO &$pdo): void {
-  $pdo = buildPdo();
-}
-
-function ensurePdoAlive(PDO &$pdo): void {
-  try {
-    $pdo->query('SELECT 1');
-  } catch (Throwable $e) {
-    if (isReconnectableDbError($e)) {
-      fwrite(STDERR, '[DB] reconnect PDO: ' . $e->getMessage() . "\n");
-      reconnectPdo($pdo);
-      return;
-    }
-    throw $e;
-  }
-}
-
-function isReconnectableDbError(Throwable $e): bool {
-  $msg = $e->getMessage();
-  return stripos($msg, 'server has gone away') !== false ||
-         stripos($msg, 'Lost connection') !== false;
-}
-
 function upsertFinsSummaryRowsWithReconnect(PDO &$pdo, array $rows): int {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
     return upsertFinsSummaryRows($pdo, $rows);
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry fins upsert: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
-    ensurePdoAlive($pdo);
+    jqReconnectPdo($pdo);
+    jqEnsurePdoAlive($pdo);
     return upsertFinsSummaryRows($pdo, $rows);
   }
 }
 
 function deleteAllFinsSummaryRows(PDO &$pdo): void {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
     $pdo->exec('DELETE FROM jquants_fins_summary');
     echo "[INFO] jquants_fins_summary all rows deleted.\n";
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry delete fins summary: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
-    ensurePdoAlive($pdo);
+    jqReconnectPdo($pdo);
+    jqEnsurePdoAlive($pdo);
     $pdo->exec('DELETE FROM jquants_fins_summary');
     echo "[INFO] jquants_fins_summary all rows deleted.\n";
   }
@@ -655,7 +616,7 @@ function fetchRecentFinsRowsFromDb(
   string $targetISODate
 ): array {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
 
     $sql = "SELECT *
             FROM jquants_fins_summary
@@ -675,7 +636,7 @@ function fetchRecentFinsRowsFromDb(
     return is_array($rows) ? $rows : [];
 
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) {
+    if (!jqIsReconnectableDbError($e)) {
       throw $e;
     }
 
@@ -686,7 +647,7 @@ function fetchRecentFinsRowsFromDb(
       . "\n"
     );
 
-    reconnectPdo($pdo);
+    jqReconnectPdo($pdo);
 
     return fetchRecentFinsRowsFromDb(
       $pdo,
@@ -950,7 +911,7 @@ function getForecastPeriodFromFinsRow(array $row): ?array {
 
 function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?array {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
 
     $sql = "SELECT asof_date, code, close, volume
             FROM prices_eod
@@ -974,16 +935,16 @@ function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?a
       'AdjVo' => $row['volume'],
     ];
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry fetch index price: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
+    jqReconnectPdo($pdo);
     return fetchIndexPriceBarFromDb($pdo, $code4, $dateISO);
   }
 }
 
 function fetchLatestPriceBarFromDb(PDO &$pdo, string $code4, string $targetISODate): ?array {
   try {
-    ensurePdoAlive($pdo);
+    jqEnsurePdoAlive($pdo);
 
     $sql = "SELECT asof_date, code, close, volume
             FROM prices_eod
@@ -1009,9 +970,9 @@ function fetchLatestPriceBarFromDb(PDO &$pdo, string $code4, string $targetISODa
       'AdjVo' => $row['volume'],
     ];
   } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
+    if (!jqIsReconnectableDbError($e)) throw $e;
     fwrite(STDERR, '[DB] reconnect and retry fetch latest price: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
+    jqReconnectPdo($pdo);
     return fetchLatestPriceBarFromDb($pdo, $code4, $targetISODate);
   }
 }

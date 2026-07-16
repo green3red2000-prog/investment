@@ -132,3 +132,88 @@ function throttleJQuantsApi(): void {
 
   $lastRequestAt = microtime(true);
 }
+
+// =======================================================
+// MariaDB / PDO 共通処理
+// =======================================================
+
+/**
+ * J-Quants関連DBへ接続するPDOを生成する。
+ */
+function jqBuildPdo(): PDO
+{
+    foreach ([
+        'JQUANTS_DB_HOST',
+        'JQUANTS_DB_PORT',
+        'JQUANTS_DB_NAME',
+        'JQUANTS_DB_USER',
+        'JQUANTS_DB_PASS',
+    ] as $constantName) {
+        if (!defined($constantName)) {
+            throw new RuntimeException(
+                "{$constantName} が定義されていません。"
+            );
+        }
+    }
+
+    $dsn = sprintf(
+        'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+        JQUANTS_DB_HOST,
+        JQUANTS_DB_PORT,
+        JQUANTS_DB_NAME
+    );
+
+    return new PDO(
+        $dsn,
+        JQUANTS_DB_USER,
+        JQUANTS_DB_PASS,
+        [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]
+    );
+}
+
+/**
+ * PDO接続を作り直す。
+ */
+function jqReconnectPdo(PDO &$pdo): void
+{
+    $pdo = jqBuildPdo();
+}
+
+/**
+ * DB接続が切断された可能性のあるエラーか判定する。
+ */
+function jqIsReconnectableDbError(Throwable $e): bool
+{
+    $message = $e->getMessage();
+
+    return
+        stripos($message, 'server has gone away') !== false ||
+        stripos($message, 'Lost connection') !== false;
+}
+
+/**
+ * PDO接続を確認し、切断されていた場合は再接続する。
+ */
+function jqEnsurePdoAlive(PDO &$pdo): void
+{
+    try {
+        $pdo->query('SELECT 1');
+    } catch (Throwable $e) {
+        if (!jqIsReconnectableDbError($e)) {
+            throw $e;
+        }
+
+        fwrite(
+            STDERR,
+            '[DB] reconnect PDO: ' .
+            $e->getMessage() .
+            PHP_EOL
+        );
+
+        jqReconnectPdo($pdo);
+    }
+}
