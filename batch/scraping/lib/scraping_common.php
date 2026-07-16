@@ -436,117 +436,179 @@ function http_get_text_browser(string $url, array $opt = []): string {
   $lastErr = null;
 
   for ($try = 1; $try <= $retryMax; $try++) {
-    $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] ?? pick_random_proxy_credential();
+    $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
+      ?? pick_random_proxy_credential();
+
     $proxyHp = proxy_hostport_((string)$cred['proxy']);
 
-    $outDir = $opt['out_dir'] ?? '/opt/invest/scraping/tmp';
+    $outDir = $opt['out_dir']
+      ?? '/opt/invest/scraping/tmp';
+
     ensure_dir($outDir);
-    $outPath = $outDir . '/pw_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.html';
 
-    // Node にプロキシを env で渡す（=二元管理を排除）
-    $env = [
-      'WS_PROXY_SERVER' => $cred['proxy'],
-      'WS_PROXY_USER'   => $cred['user'],
-      'WS_PROXY_PASS'   => $cred['pass'],
-    ];
+    $outPath =
+      $outDir .
+      '/pw_' .
+      date('Ymd_His') .
+      '_' .
+      bin2hex(random_bytes(4)) .
+      '.html';
 
-    $cmd = sprintf(
-      '%s %s %s %s',
-      escapeshellcmd(BROWSER_FETCH_NODE_BIN),
-      escapeshellarg(BROWSER_FETCH_SCRIPT),
-      escapeshellarg($url),
-      escapeshellarg($outPath)
-    );
+    try {
+      // Node にプロキシをenvで渡す。
+      $env = [
+        'WS_PROXY_SERVER' => $cred['proxy'],
+        'WS_PROXY_USER'   => $cred['user'],
+        'WS_PROXY_PASS'   => $cred['pass'],
+      ];
 
-    // proc_open で env を付けて実行
-    $descriptors = [
-      0 => ['pipe', 'r'],
-      1 => ['pipe', 'w'],
-      2 => ['pipe', 'w'],
-    ];
+      $cmd = sprintf(
+        '%s %s %s %s',
+        escapeshellcmd(BROWSER_FETCH_NODE_BIN),
+        escapeshellarg(BROWSER_FETCH_SCRIPT),
+        escapeshellarg($url),
+        escapeshellarg($outPath)
+      );
 
-    $proc = proc_open($cmd, $descriptors, $pipes, null, array_merge($_ENV, $env));
-    if (!is_resource($proc)) {
-      throw new RuntimeException("proc_open failed: {$cmd}");
-    }
-    
-    $status = proc_get_status($proc);
-    $pid = $status['pid'] ?? 0;
+      $descriptors = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+      ];
 
-    fclose($pipes[0]);
-    stream_set_timeout($pipes[1], $timeoutSec);
-    stream_set_timeout($pipes[2], $timeoutSec);
+      $proc = proc_open(
+        $cmd,
+        $descriptors,
+        $pipes,
+        null,
+        array_merge($_ENV, $env)
+      );
 
-    $stdout = '';
-    $stderr = '';
-    $exitCode = null;
-
-    $start = time();
-
-    while (true) {
-
-      $stdout .= stream_get_contents($pipes[1]);
-      $stderr .= stream_get_contents($pipes[2]);
+      if (!is_resource($proc)) {
+        throw new RuntimeException(
+          "proc_open failed: {$cmd}"
+        );
+      }
 
       $status = proc_get_status($proc);
+      $pid = $status['pid'] ?? 0;
 
-      if (!$status['running']) {
-        break;
-      }
+      fclose($pipes[0]);
 
-      if ((time() - $start) >= $timeoutSec) {
+      stream_set_timeout(
+        $pipes[1],
+        $timeoutSec
+      );
 
-        fwrite(STDERR,
-          "[BROWSER][timeout] {$timeoutSec}s proxy={$proxyHp} pid={$pid} {$url}\n"
-        );
+      stream_set_timeout(
+        $pipes[2],
+        $timeoutSec
+      );
 
-        @proc_terminate($proc);
+      $stdout = '';
+      $stderr = '';
+      $exitCode = null;
 
-        if (stripos(PHP_OS, 'WIN') === 0 && $pid > 0) {
-          exec("taskkill /F /T /PID {$pid}");
-          exec("taskkill /IM msedge.exe /F");
+      $start = time();
+
+      while (true) {
+        $stdout .= stream_get_contents($pipes[1]);
+        $stderr .= stream_get_contents($pipes[2]);
+
+        $status = proc_get_status($proc);
+
+        if (!$status['running']) {
+          break;
         }
 
-        $lastErr = "Playwright timeout({$timeoutSec}s) via {$proxyHp}: {$url}";
-        $exitCode = -1;
+        if ((time() - $start) >= $timeoutSec) {
+          fwrite(
+            STDERR,
+            "[BROWSER][timeout] {$timeoutSec}s " .
+            "proxy={$proxyHp} pid={$pid} {$url}\n"
+          );
 
-        break;
+          @proc_terminate($proc);
+
+          if (
+            stripos(PHP_OS, 'WIN') === 0 &&
+            $pid > 0
+          ) {
+            exec("taskkill /F /T /PID {$pid}");
+            exec("taskkill /IM msedge.exe /F");
+          }
+
+          $lastErr =
+            "Playwright timeout({$timeoutSec}s) " .
+            "via {$proxyHp}: {$url}";
+
+          $exitCode = -1;
+
+          break;
+        }
+
+        usleep(200000);
       }
 
-      usleep(200000);
-    }
+      fclose($pipes[1]);
+      fclose($pipes[2]);
 
-    fclose($pipes[1]);
-    fclose($pipes[2]);
+      $closedExitCode = @proc_close($proc);
 
-    $closedExitCode = @proc_close($proc);
+      if ($exitCode === null) {
+        $exitCode = is_int($closedExitCode)
+          ? $closedExitCode
+          : -1;
+      }
 
-    if ($exitCode === null) {
-      $exitCode = is_int($closedExitCode) ? $closedExitCode : -1;
-    }
+      if (
+        $exitCode === 0 &&
+        file_exists($outPath)
+      ) {
+        $html = file_get_contents($outPath);
 
-    if ($exitCode === 0 && file_exists($outPath)) {
-      $html = file_get_contents($outPath);
-      @unlink($outPath);
-
-      if ($html === false || $html === '') {
-        $lastErr = "Playwright returned empty html: {$url}";
+        if ($html === false || $html === '') {
+          $lastErr =
+            "Playwright returned empty html: {$url}";
+        } else {
+          return $html;
+        }
       } else {
-        return $html;
+        $lastErr =
+          "Playwright failed(exit={$exitCode}) " .
+          "via {$proxyHp} url={$url} " .
+          "stderr=" .
+          trim($stderr);
       }
-    } else {
-      $lastErr = "Playwright failed(exit={$exitCode}) via {$proxyHp} url={$url} stderr=" . trim($stderr);
-    }
 
-    // リトライ：proxy rotate（sticky時のみ）＆sleep
-    fwrite(STDERR, "[BROWSER][retry {$try}/{$retryMax}] proxy={$proxyHp} {$lastErr}\n");
-    usleep($sleepMs * 1000);
-    if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
-      http_session_reset_proxy();
+      fwrite(
+        STDERR,
+        "[BROWSER][retry {$try}/{$retryMax}] " .
+        "proxy={$proxyHp} {$lastErr}\n"
+      );
+
+      usleep($sleepMs * 1000);
+
+      if (
+        $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
+        !== null
+      ) {
+        http_session_reset_proxy();
+      }
+    } finally {
+      /*
+       * Playwrightが作成した一時HTMLは、
+       * 成功・失敗・タイムアウトを問わず削除する。
+       */
+      if (is_file($outPath)) {
+        @unlink($outPath);
+      }
     }
   }
 
-  throw new RuntimeException($lastErr ?? "Playwright error: {$url}");
+  throw new RuntimeException(
+    $lastErr ?? "Playwright error: {$url}"
+  );
 }
 
 /**
