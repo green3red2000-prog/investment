@@ -199,11 +199,14 @@ try {
     $finsApiReturnedZero = false;
 
     try {
-      $fin = null;       // 売上高・経常益・最終益・PER/PBR/利回り用
-      $finShares = null; // 時価総額の ShOutFY 用
+      $finRows = []; // 基準日以前の財務情報を新しい順に最大30件取得
+
       if (empty($master['is_etf_like']) && empty($master['is_index'])) {
-         $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
-         $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
+        $finRows = fetchRecentFinsRowsFromDb(
+          $pdo,
+          $code5,
+          $targetISODate
+        );
       }
       
       if (!empty($master['is_index'])) {
@@ -227,7 +230,7 @@ try {
       }
 
       // DBに財務情報がない銘柄は、code指定で初回登録する。
-      if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
+      if (empty($finRows) && empty($master['is_etf_like']) && empty($master['is_index'])) {
         echo "[API] fins summary initial code={$code5}\n";
         $codeFinsRows = jquantsGetAll(JQUANTS_FINS_SUMMARY_PATH, ['code' => $code5]);
         
@@ -241,11 +244,10 @@ try {
 
         // API取得結果はDBへ登録し、採用判定は必ずDBから再取得して行う。
         // これにより、通常時も初回取得時も同じロジックで財務情報を採用する。
-        $fin = fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
-        $finShares = fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
+        $finRows = fetchRecentFinsRowsFromDb($pdo,$code5,$targetISODate);
       }
 
-      if (($fin === null || $finShares === null) && empty($master['is_etf_like']) && empty($master['is_index'])) {
+      if (empty($finRows) && empty($master['is_etf_like']) && empty($master['is_index'])) {
         if ($finsApiReturnedZero) {
           $warnings[] = '財務情報J-Quants登録なし';
           fwrite(STDERR, "[WARN] code={$code4} code5={$code5} 財務情報J-Quants登録なし\n");
@@ -276,15 +278,18 @@ try {
       $adjVo = $curBar !== null ? toFloatOrNull($curBar['AdjVo'] ?? null) : null;
       $prevAdjVo = $prevBar !== null ? toFloatOrNull($prevBar['AdjVo'] ?? null) : null;
 
-      $sales = $fin !== null ? toFloatOrNull($fin['Sales'] ?? null) : null;
-      $odp = $fin !== null ? toFloatOrNull($fin['OdP'] ?? null) : null;
-      $np = $fin !== null ? toFloatOrNull($fin['NP'] ?? null) : null;
-      $shOut = $finShares !== null ? toFloatOrNull($finShares['ShOutFY'] ?? null) : null;
-      $feps = $fin !== null ? toFloatOrNull($fin['FEPS'] ?? null) : null;
-      $eps = $fin !== null ? toFloatOrNull($fin['EPS'] ?? null) : null;
-      $bps = $fin !== null ? toFloatOrNull($fin['BPS'] ?? null) : null;
-      $fDivAnn = $fin !== null ? toFloatOrNull($fin['FDivAnn'] ?? null) : null;
-      $divAnn = $fin !== null ? toFloatOrNull($fin['DivAnn'] ?? null) : null;
+      // 最新の決算レコードを基準に予想対象年度を決定し、
+      // 同じ予想対象年度のレコードだけを使って各項目を補完する。
+      $finValues = buildFinancialValuesFromRows($finRows);
+
+      $sales = $finValues['sales'];
+      $odp = $finValues['ordinary_profit'];
+      $np = $finValues['net_profit'];
+      $forecastEps = $finValues['forecast_eps'];
+      $forecastDivAnn = $finValues['forecast_dividend'];
+      $shOut = $finValues['shares_outstanding'];
+      $trSh = $finValues['treasury_shares'];
+      $bps = $finValues['bps'];
       
       if (empty($master['is_index'])) {
         if ($adjVo === null) {
@@ -317,29 +322,51 @@ try {
       if ($shOut === null && empty($master['is_etf_like']) && empty($master['is_index'])) {
         $row['時価総額'] = CSV_DASH;
       }
-      if ($sales !== null) $row['売上高'] = $sales / 100000000.0;
-      if ($sales === null && $fin !== null) $row['売上高'] = CSV_DASH;
-      if ($odp !== null) $row['経常益'] = $odp / 100000000.0;
-      if ($odp === null && $fin !== null) $row['経常益'] = CSV_DASH;
-      if ($np !== null) $row['最終益'] = $np / 100000000.0;
-      if ($np === null && $fin !== null) $row['最終益'] = CSV_DASH;
-
-      $perBase = null;
-      if ($feps !== null && $feps > 0) {
-        $perBase = $feps;
-      } elseif ($eps !== null && $eps > 0) {
-        $perBase = $eps;
+      // 通期会社予想をCSV出力する。
+      if ($sales !== null) {
+        $row['売上高'] = $sales / 100000000.0;
+      } elseif (!empty($finRows)) {
+        $row['売上高'] = CSV_DASH;
       }
-      $row['PER'] = ($calcAdjC !== null && $perBase !== null) ? ($calcAdjC / $perBase) : CSV_DASH;
-      $row['PBR'] = ($calcAdjC !== null && $bps !== null && $bps > 0) ? ($calcAdjC / $bps) : CSV_DASH;
 
-      $divBase = null;
-      if ($fDivAnn !== null) {
-        $divBase = $fDivAnn;
-      } elseif ($divAnn !== null) {
-        $divBase = $divAnn;
+      if ($odp !== null) {
+        $row['経常益'] = $odp / 100000000.0;
+      } elseif (!empty($finRows)) {
+        $row['経常益'] = CSV_DASH;
       }
-      $row['利回り'] = ($calcAdjC !== null && $calcAdjC > 0 && $divBase !== null) ? (($divBase / $calcAdjC) * 100.0) : CSV_DASH;
+
+      if ($np !== null) {
+        $row['最終益'] = $np / 100000000.0;
+      } elseif (!empty($finRows)) {
+        $row['最終益'] = CSV_DASH;
+      }
+
+      // PER＝株価÷予想EPS
+      $row['PER'] = (
+        $calcAdjC !== null &&
+        $forecastEps !== null &&
+        $forecastEps > 0
+      )
+        ? ($calcAdjC / $forecastEps)
+        : CSV_DASH;
+
+      // PBR＝株価÷最新実績BPS
+      $row['PBR'] = (
+        $calcAdjC !== null &&
+        $bps !== null &&
+        $bps > 0
+      )
+        ? ($calcAdjC / $bps)
+        : CSV_DASH;
+
+      // 利回り＝予想年間配当÷株価×100
+      $row['利回り'] = (
+        $calcAdjC !== null &&
+        $calcAdjC > 0 &&
+        $forecastDivAnn !== null
+      )
+        ? (($forecastDivAnn / $calcAdjC) * 100.0)
+        : CSV_DASH;
 
       if ($adjC !== null) $row['終値'] = $adjC;
       if ($prevAdjC !== null && $adjC !== null) {
@@ -373,9 +400,6 @@ try {
       } else {
         $errorResult = 'エラー：財務情報API取得に失敗';
       }
-     } catch (Throwable $e) {
-      $errors[] = '処理失敗: ' . $e->getMessage();
-      $errorResult = 'エラー：その他例外処理発生';
     }
 
     if (count($errors) === 0) {
@@ -387,7 +411,7 @@ try {
         $ok++;
       }
     } else {
-      $row['実行結果'] = $errorResult !== '' ? $errorResult : 'エラー：その他例外処理発生';
+      $row['実行結果'] = $errorResult !== '' ? $errorResult : 'エラー：J-QuantsAPI取得に失敗';
       $err++;
       fwrite(STDERR, "[WARN] code={$code4} code5={$code5} " . implode(', ', $errors) . "\n");
     }
@@ -619,49 +643,27 @@ function normalizeFinsRowForDb(array $row): ?array {
   return $out;
 }
 
-function fetchLatestFinsFromDb(PDO &$pdo, string $code5, string $targetISODate): ?array {
+/**
+ * 基準日以前の財務情報を新しい順に最大30件取得する。
+ *
+ * 予想値、株式数、BPSを同じ取得結果から選択するため、
+ * CurPerTypeでは絞り込まない。
+ */
+function fetchRecentFinsRowsFromDb(
+  PDO &$pdo,
+  string $code5,
+  string $targetISODate
+): array {
   try {
     ensurePdoAlive($pdo);
+
     $sql = "SELECT *
             FROM jquants_fins_summary
             WHERE Code = :code
               AND DiscDate <= :target_date
             ORDER BY DiscDate DESC, DiscTime DESC, DiscNo DESC
             LIMIT 30";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-      ':code' => normalizeCode5($code5),
-      ':target_date' => $targetISODate,
-    ]);
-    $rows = $stmt->fetchAll();
-    if (!$rows) {
-      return null;
-    }
-    foreach ($rows as $row) {
-      if (hasUsableFinancialValues($row)) {
-        return $row;
-      }
-    }
 
-    // 全部値なしなら、一番新しいレコードを返す
-    return $rows[0];
-  } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
-    fwrite(STDERR, '[DB] reconnect and retry fetch fins: ' . $e->getMessage() . "\n");
-    reconnectPdo($pdo);
-    return fetchLatestFinsFromDb($pdo, $code5, $targetISODate);
-  }
-}
-
-function fetchLatestFinsSharesFromDb(PDO &$pdo, string $code5, string $targetISODate): ?array {
-  try {
-    ensurePdoAlive($pdo);
-    $sql = "SELECT *
-            FROM jquants_fins_summary
-            WHERE Code = :code
-              AND DiscDate <= :target_date
-            ORDER BY DiscDate DESC, DiscTime DESC, DiscNo DESC
-            LIMIT 30";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
       ':code' => normalizeCode5($code5),
@@ -669,52 +671,281 @@ function fetchLatestFinsSharesFromDb(PDO &$pdo, string $code5, string $targetISO
     ]);
 
     $rows = $stmt->fetchAll();
-    if (!$rows) return null;
 
-    foreach ($rows as $row) {
-      if (hasUsableSharesValue($row)) {
-        return $row;
-      }
+    return is_array($rows) ? $rows : [];
+
+  } catch (Throwable $e) {
+    if (!isReconnectableDbError($e)) {
+      throw $e;
     }
 
-    return $rows[0];
-  } catch (Throwable $e) {
-    if (!isReconnectableDbError($e)) throw $e;
-    fwrite(STDERR, '[DB] reconnect and retry fetch fins shares: ' . $e->getMessage() . "\n");
+    fwrite(
+      STDERR,
+      '[DB] reconnect and retry fetch recent fins rows: '
+      . $e->getMessage()
+      . "\n"
+    );
+
     reconnectPdo($pdo);
-    return fetchLatestFinsSharesFromDb($pdo, $code5, $targetISODate);
+
+    return fetchRecentFinsRowsFromDb(
+      $pdo,
+      $code5,
+      $targetISODate
+    );
   }
 }
-function selectLatestFinsSharesRowFromArray(array $rows, string $code5, string $targetISODate): ?array {
-  $candidates = [];
-  $code5 = normalizeCode5($code5);
+/**
+ * 財務情報30件からCSV算出用の財務値を選択する。
+ *
+ * 1. 最新のFY・1Q・2Q・3Qレコードから予想対象年度を決定する。
+ * 2. 同じ予想対象年度に属するレコードだけで予想値を補完する。
+ * 3. 各候補レコードがFYならNxF系、四半期ならF系を使用する。
+ * 4. BPS・株式数は予想年度に関係なく最新の実績値を使用する。
+ */
+function buildFinancialValuesFromRows(array $rows): array {
+  $result = [
+    'sales' => null,
+    'ordinary_profit' => null,
+    'net_profit' => null,
+    'forecast_eps' => null,
+    'forecast_dividend' => null,
+    'shares_outstanding' => null,
+    'treasury_shares' => null,
+    'bps' => null,
+  ];
 
-  foreach ($rows as $row) {
-    if (!is_array($row)) continue;
-    $code = normalizeCode5((string)($row['Code'] ?? ''));
-    if ($code !== $code5) continue;
+  if (empty($rows)) {
+    return $result;
+  }
 
-    try {
-      $discDate = normalizeDateToIso((string)($row['DiscDate'] ?? ''));
-    } catch (Throwable $e) {
+  /*
+   * 予想対象年度を決める基準レコード。
+   *
+   * FY：
+   *   翌事業年度 NxtFYSt～NxtFYEn
+   *
+   * 1Q・2Q・3Q：
+   *   当事業年度 CurFYSt～CurFYEn
+   */
+  $baseRow = null;
+  $targetFySt = null;
+  $targetFyEn = null;
+
+  foreach ($rows as $candidate) {
+    if (!is_array($candidate)) {
       continue;
     }
-    if ($discDate > $targetISODate) continue;
 
-    $candidates[] = $row;
+    $period = getForecastPeriodFromFinsRow($candidate);
+
+    if ($period === null) {
+      continue;
+    }
+
+    $baseRow = $candidate;
+    $targetFySt = $period['start'];
+    $targetFyEn = $period['end'];
+    break;
   }
 
-  usort($candidates, function(array $a, array $b): int {
-    return strcmp(finsSortKey($b), finsSortKey($a));
-  });
+  /*
+   * 同じ予想対象年度だけを使い、項目ごとに最新の非NULL値を採用する。
+   *
+   * 候補レコード自身がFYならNxF系、
+   * 1Q・2Q・3QならF系を参照する。
+   *
+   * これにより、例えば最新が1Qで一部項目がNULLの場合でも、
+   * 直前のFYに収録された同じ年度のNxF系予想値で補完できる。
+   */
+  if ($baseRow !== null && $targetFySt !== null && $targetFyEn !== null) {
+    foreach ($rows as $candidate) {
+      if (!is_array($candidate)) {
+        continue;
+      }
 
-  foreach ($candidates as $row) {
-    if (hasUsableSharesValue($row)) {
-      return $row;
+      $period = getForecastPeriodFromFinsRow($candidate);
+
+      if ($period === null) {
+        continue;
+      }
+
+      if (
+        $period['start'] !== $targetFySt ||
+        $period['end'] !== $targetFyEn
+      ) {
+        continue;
+      }
+
+      $isCandidateFy = ($period['type'] === 'FY');
+
+      if ($result['sales'] === null) {
+        $result['sales'] = toFloatOrNull(
+          $isCandidateFy
+            ? ($candidate['NxFSales'] ?? null)
+            : ($candidate['FSales'] ?? null)
+        );
+      }
+
+      if ($result['ordinary_profit'] === null) {
+        $docType = strtoupper(
+          trim((string)($candidate['DocType'] ?? ''))
+        );
+
+        $isIfrsOrUs =
+          strpos($docType, '_IFRS') !== false ||
+          strpos($docType, '_US') !== false;
+
+        if ($isIfrsOrUs) {
+          $result['ordinary_profit'] = toFloatOrNull(
+            $isCandidateFy
+              ? ($candidate['NxFOP'] ?? null)
+              : ($candidate['FOP'] ?? null)
+          );
+        } else {
+          $result['ordinary_profit'] = toFloatOrNull(
+            $isCandidateFy
+              ? ($candidate['NxFOdP'] ?? null)
+              : ($candidate['FOdP'] ?? null)
+          );
+        }
+      }
+
+      if ($result['net_profit'] === null) {
+        $result['net_profit'] = toFloatOrNull(
+          $isCandidateFy
+            ? ($candidate['NxFNp'] ?? null)
+            : ($candidate['FNP'] ?? null)
+        );
+      }
+
+      if ($result['forecast_eps'] === null) {
+        $result['forecast_eps'] = toFloatOrNull(
+          $isCandidateFy
+            ? ($candidate['NxFEPS'] ?? null)
+            : ($candidate['FEPS'] ?? null)
+        );
+      }
+
+      if ($result['forecast_dividend'] === null) {
+        $result['forecast_dividend'] = toFloatOrNull(
+          $isCandidateFy
+            ? ($candidate['NxFDivAnn'] ?? null)
+            : ($candidate['FDivAnn'] ?? null)
+        );
+      }
+
+      if (
+        $result['sales'] !== null &&
+        $result['ordinary_profit'] !== null &&
+        $result['net_profit'] !== null &&
+        $result['forecast_eps'] !== null &&
+        $result['forecast_dividend'] !== null
+      ) {
+        break;
+      }
     }
   }
 
-  return $candidates[0] ?? null;
+  // BPS・株式数は予想対象年度に関係なく最新の非NULL値を採用する。
+  foreach ($rows as $candidate) {
+    if (!is_array($candidate)) {
+      continue;
+    }
+
+    if ($result['bps'] === null) {
+      $result['bps'] = toFloatOrNull($candidate['BPS'] ?? null);
+    }
+
+    if ($result['shares_outstanding'] === null) {
+      $result['shares_outstanding'] = toFloatOrNull(
+        $candidate['ShOutFY'] ?? null
+      );
+    }
+
+    /*
+     * 自己株式数は0も有効値。
+     * toFloatOrNull()は数値0を0.0として返すので問題ない。
+     */
+    if ($result['treasury_shares'] === null) {
+      $result['treasury_shares'] = toFloatOrNull(
+        $candidate['TrShFY'] ?? null
+      );
+    }
+
+    if (
+      $result['bps'] !== null &&
+      $result['shares_outstanding'] !== null &&
+      $result['treasury_shares'] !== null
+    ) {
+      break;
+    }
+  }
+
+  // 予想EPSがない場合は、予想最終益÷実質株式数で補完する。
+  if (
+    $result['forecast_eps'] === null &&
+    $result['net_profit'] !== null &&
+    $result['shares_outstanding'] !== null
+  ) {
+    $treasuryShares = $result['treasury_shares'] ?? 0.0;
+
+    $effectiveShares =
+      $result['shares_outstanding'] - $treasuryShares;
+
+    if ($effectiveShares > 0) {
+      $result['forecast_eps'] =
+        $result['net_profit'] / $effectiveShares;
+    }
+  }
+
+  return $result;
+}
+/**
+ * 財務レコードが表す予想対象年度を取得する。
+ *
+ * FY：
+ *   翌期予想を使用するためNxtFYSt～NxtFYEn
+ *
+ * 1Q・2Q・3Q：
+ *   当期予想を使用するためCurFYSt～CurFYEn
+ */
+function getForecastPeriodFromFinsRow(array $row): ?array {
+  $curPerType = strtoupper(
+    trim((string)($row['CurPerType'] ?? ''))
+  );
+
+  if ($curPerType === 'FY') {
+    $start = nullableDate($row['NxtFYSt'] ?? null);
+    $end = nullableDate($row['NxtFYEn'] ?? null);
+
+    if ($start === null || $end === null) {
+      return null;
+    }
+
+    return [
+      'type' => 'FY',
+      'start' => $start,
+      'end' => $end,
+    ];
+  }
+
+  if (in_array($curPerType, ['1Q', '2Q', '3Q'], true)) {
+    $start = nullableDate($row['CurFYSt'] ?? null);
+    $end = nullableDate($row['CurFYEn'] ?? null);
+
+    if ($start === null || $end === null) {
+      return null;
+    }
+
+    return [
+      'type' => $curPerType,
+      'start' => $start,
+      'end' => $end,
+    ];
+  }
+
+  return null;
 }
 
 function fetchIndexPriceBarFromDb(PDO &$pdo, string $code4, string $dateISO): ?array {
@@ -783,73 +1014,6 @@ function fetchLatestPriceBarFromDb(PDO &$pdo, string $code4, string $targetISODa
     reconnectPdo($pdo);
     return fetchLatestPriceBarFromDb($pdo, $code4, $targetISODate);
   }
-}
-
-function selectLatestFinsRowFromArray(array $rows, string $code5, string $targetISODate): ?array {
-  $candidates = [];
-  $code5 = normalizeCode5($code5);
-
-  foreach ($rows as $row) {
-    if (!is_array($row)) continue;
-    $code = normalizeCode5((string)($row['Code'] ?? ''));
-    if ($code !== $code5) continue;
-
-    try {
-      $discDate = normalizeDateToIso((string)($row['DiscDate'] ?? ''));
-    } catch (Throwable $e) {
-      continue;
-    }
-    if ($discDate > $targetISODate) continue;
-
-     $candidates[] = $row;
-  }
-
-  usort($candidates, function(array $a, array $b): int {
-    return strcmp(finsSortKey($b), finsSortKey($a));
-  });
-
-  foreach ($candidates as $row) {
-    if (hasUsableFinancialValues($row)) {
-      return $row;
-    }
-  }
-
-  return $candidates[0] ?? null;
-}
-
-function finsSortKey(array $row): string {
-  $date = '';
-  try {
-    $date = normalizeDateToIso((string)($row['DiscDate'] ?? ''));
-  } catch (Throwable $e) {
-    $date = (string)($row['DiscDate'] ?? '');
-  }
-
-  return $date . ' ' .
-    (string)($row['DiscTime'] ?? '') . ' ' .
-    (string)($row['DiscNo'] ?? '');
-}
-
-// =====================
-// Google Sheets マスタ読み込み
-// =====================
-function loadCalendarMasterSheet(): array {
-  $values = loadSpreadsheetValues(CALENDAR_MASTER_NAME);
-  if (count($values) < 2) return [];
-
-  $header = normalizeHeader($values[0]);
-  $dateIdx = requireHeaderIndex($header, '日付', CALENDAR_MASTER_NAME);
-  $holIdx = requireHeaderIndex($header, '日本市場休日区分', CALENDAR_MASTER_NAME);
-
-  $out = [];
-  for ($i = 1; $i < count($values); $i++) {
-    $row = $values[$i];
-    $date = nullableDate($row[$dateIdx] ?? null);
-    if ($date === null) continue;
-    $holDiv = trim((string)($row[$holIdx] ?? ''));
-    $out[] = ['date' => $date, 'hol_div' => $holDiv];
-  }
-  return $out;
 }
 
 function loadSecurityCodeMasterSheet(): array {
@@ -1087,7 +1251,7 @@ function writeCsvWithHeaders(string $csvPath, array $headers, array $rows): void
 }
 
 function enforceOutputFormats(array &$row): void {
-  foreach (['時価総額','売上高','経常益','最終益','PER','PBR','信用倍率'] as $key) {
+  foreach (['時価総額','売上高','経常益','最終益','PER','信用倍率'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
       $row[$key] = CSV_DASH;
@@ -1096,7 +1260,7 @@ function enforceOutputFormats(array &$row): void {
     $row[$key] = toFixed1Number($row[$key]);
   }
 
-  foreach (['終値','前日比','騰落率','利回り'] as $key) {
+  foreach (['PBR','終値','前日比','騰落率','利回り'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
       $row[$key] = CSV_DASH;
@@ -1130,7 +1294,7 @@ function applyDashByWarningsAndType(array &$row, array $warnings, array $master)
   };
 
   if ($hasWarning('財務情報J-Quants登録なし')) {
-    setDashValues($row, ['時価総額','売上高','経常益','最終益']);
+    setDashValues($row, ['時価総額','売上高','経常益','最終益','PER','PBR','利回り']);
   }
 
   if ($hasWarning('前営業日出来高なし')) {
@@ -1150,14 +1314,14 @@ function applyDashByWarningsAndType(array &$row, array $warnings, array $master)
   }
 
   if (!empty($master['is_index'])) {
-    setDashValues($row, ['時価総額','売上高','経常益','最終益','信用日付','信用売り残','信用買い残','信用倍率']);
+    setDashValues($row, ['時価総額','売上高','経常益','最終益','PER','PBR','利回り','信用日付','信用売り残','信用買い残','信用倍率']);
     if (!isset($row['出来高']) || $row['出来高'] === '') {
       $row['出来高'] = CSV_DASH;
     }
   }
 
   if (!empty($master['is_etf_like'])) {
-    setDashValues($row, ['時価総額','売上高','経常益','最終益']);
+    setDashValues($row, ['時価総額','売上高','経常益','最終益','PER','PBR','利回り']);
   }
 }
 
@@ -1305,13 +1469,39 @@ function toFixed2Number($raw) {
   if ($n === null) return '';
   return (float)number_format($n, 2, '.', '');
 }
-function hasUsableFinancialValues(array $row): bool {
+function loadCalendarMasterSheet(): array {
+  $values = loadSpreadsheetValues(CALENDAR_MASTER_NAME);
+  if (count($values) < 2) return [];
 
-    return
-      toFloatOrNull($row['Sales'] ?? null) !== null ||
-      toFloatOrNull($row['OdP'] ?? null) !== null ||
-      toFloatOrNull($row['NP'] ?? null) !== null;
-}
-function hasUsableSharesValue(array $row): bool {
-  return toFloatOrNull($row['ShOutFY'] ?? null) !== null;
+  $header = normalizeHeader($values[0]);
+  $dateIdx = requireHeaderIndex(
+    $header,
+    '日付',
+    CALENDAR_MASTER_NAME
+  );
+  $holIdx = requireHeaderIndex(
+    $header,
+    '日本市場休日区分',
+    CALENDAR_MASTER_NAME
+  );
+
+  $out = [];
+
+  for ($i = 1; $i < count($values); $i++) {
+    $row = $values[$i];
+
+    $date = nullableDate($row[$dateIdx] ?? null);
+    if ($date === null) {
+      continue;
+    }
+
+    $holDiv = trim((string)($row[$holIdx] ?? ''));
+
+    $out[] = [
+      'date' => $date,
+      'hol_div' => $holDiv,
+    ];
+  }
+
+  return $out;
 }
