@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * 全銘柄日足分析
  * - Google Drive/Sheets: OAuth（本人）で読み込み＆アップロード
- * - MariaDB: stocks.prices_eod から 200本取得して分析
+ * - MariaDB: stocks.prices_eod から最大220本取得して分析
  * - ローカルCSV作成 → Driveへアップロード → ローカル削除
  *
  * 参考：GAS版の分析ロジック（computeAllMetrics_ 等）をPHP移植
@@ -183,7 +183,18 @@ function main(): void {
         echo "TEST_MODE: processed {$processed} codes, stop early.\n";
         break;
       }
-
+    } catch (DivisionByZeroError $e) {
+      $rowBase['実行結果'] = 'エラー：ゼロ除算';
+      $outRow = buildOutputRow(
+        $rowBase,
+        $calcHeaders,
+        [],
+        $baseInfoExtraHeaders,
+        $baseInfoMap,
+        $baseInfoExtraPos
+      );
+      fputcsv($fp, $outRow);
+      fwrite(STDERR, "[ZERO_DIVISION] code={$code} {$e->getMessage()}\n");
     } catch (Throwable $e) {
       $rowBase['実行結果'] = 'エラー：その他';
       $outRow = buildOutputRow($rowBase, $calcHeaders, [], $baseInfoExtraHeaders, $baseInfoMap, $baseInfoExtraPos);
@@ -462,7 +473,7 @@ function readBaseInfoMaster(Google\Service\Sheets $sheets, string $spreadsheetId
   );
   $values = $resp->getValues() ?? [];
   if (count($values) < 1) {
-    return [[], [], []];
+    return [[], [], [], []];
   }
 
   $header = array_map(fn($x) => trim((string)$x), $values[0]);
@@ -698,7 +709,7 @@ function buildOutputRow(
     foreach ($baseInfoExtraHeaders as $_) $out[] = '';
   }
   
-  // ★(98)信用買い残日数 = 「信用買い残」 * 1000 / 「(26)出来高10日移動平均」
+  // (98)信用買い残日数 = 「信用買い残」 / 「(26)出来高10日移動平均」
   $shinyoDays = '';
   $volMa10 = toFloatOrNull($metrics['(26)出来高10日移動平均'] ?? null);
 
@@ -709,7 +720,7 @@ function buildOutputRow(
   }
 
   if ($zandaka !== null && $volMa10 !== null && $volMa10 > 0) {
-    $shinyoDays = ($zandaka * 1000.0) / $volMa10;
+     $shinyoDays = $zandaka / $volMa10;
   }
 
   $out[] = $shinyoDays; // ★最終列
@@ -908,13 +919,21 @@ function computeAllMetrics(array $in): array {
   // 84..91
   $out['(84)連続日数'] = computeStreak($closeAsc);
 
-  $out['(85)5日間上昇率']  = trunc2((($lastClose / minLastN($closeAsc, 5))  - 1.0) * 100.0);
-  $out['(86)10日間上昇率'] = trunc2((($lastClose / minLastN($closeAsc, 10)) - 1.0) * 100.0);
-  $out['(88)22日間上昇率'] = trunc2((($lastClose / minLastN($closeAsc, 22)) - 1.0) * 100.0);
+  $min5  = minLastN($closeAsc, 5);
+  $min10 = minLastN($closeAsc, 10);
+  $min22 = minLastN($closeAsc, 22);
 
-  $out['(89)5日間下落率']  = trunc2((($lastClose / maxLastN($closeAsc, 5))  - 1.0) * 100.0);
-  $out['(90)10日間下落率'] = trunc2((($lastClose / maxLastN($closeAsc, 10)) - 1.0) * 100.0);
-  $out['(91)22日間下落率'] = trunc2((($lastClose / maxLastN($closeAsc, 22)) - 1.0) * 100.0);
+  $max5  = maxLastN($closeAsc, 5);
+  $max10 = maxLastN($closeAsc, 10);
+  $max22 = maxLastN($closeAsc, 22);
+
+  $out['(85)5日間上昇率']  = trunc2((($lastClose / $min5)  - 1.0) * 100.0);
+  $out['(86)10日間上昇率'] = trunc2((($lastClose / $min10) - 1.0) * 100.0);
+  $out['(88)22日間上昇率'] = trunc2((($lastClose / $min22) - 1.0) * 100.0);
+
+  $out['(89)5日間下落率']  = trunc2((($lastClose / $max5)  - 1.0) * 100.0);
+  $out['(90)10日間下落率'] = trunc2((($lastClose / $max10) - 1.0) * 100.0);
+  $out['(91)22日間下落率'] = trunc2((($lastClose / $max22) - 1.0) * 100.0);
 
   // 92..96（評価：GAS版と同じ考え方）
   $score92 = scoreLowVolVolumeInc([
@@ -1191,13 +1210,33 @@ function trunc2($x) {
 
 function minLastN(array $arr, int $N) {
   $seg = array_slice($arr, -$N);
-  $vals = array_values(array_filter($seg, fn($v)=>is_finite_num($v)));
-  return count($a=$vals) ? min($a) : '';
+  $vals = array_values(array_filter(
+    $seg,
+    fn($v) => is_finite_num($v) && (float)$v != 0.0
+  ));
+
+  if (count($vals) === 0) {
+    throw new DivisionByZeroError(
+      "直近{$N}日間の終値がすべて0のため、上昇率を計算できません"
+    );
+  }
+
+  return min($vals);
 }
 function maxLastN(array $arr, int $N) {
   $seg = array_slice($arr, -$N);
-  $vals = array_values(array_filter($seg, fn($v)=>is_finite_num($v)));
-  return count($vals) ? max($vals) : '';
+   $vals = array_values(array_filter(
+    $seg,
+    fn($v) => is_finite_num($v) && (float)$v != 0.0
+  ));
+
+  if (count($vals) === 0) {
+    throw new DivisionByZeroError(
+      "直近{$N}日間の終値がすべて0のため、下落率を計算できません"
+    );
+  }
+
+  return max($vals);
 }
 
 /* =========================================================
@@ -1212,13 +1251,50 @@ function computeMarketStats(array $symCloseAsc, array $mktCloseAsc): ?array {
 
   $symRet = [];
   $mktRet = [];
+  $symPrevNonZero = null;
+  $mktPrevNonZero = null;
+
   for ($i=1; $i<count($sym); $i++) {
-    $rs = ($sym[$i]/$sym[$i-1]-1.0);
-    $rm = ($mkt[$i]/$mkt[$i-1]-1.0);
+    // 現在位置より前から、直近の0以外の銘柄終値を探す
+    $symPrevNonZero = null;
+    for ($j = $i - 1; $j >= 0; $j--) {
+      if (is_finite_num($sym[$j]) && (float)$sym[$j] != 0.0) {
+        $symPrevNonZero = (float)$sym[$j];
+        break;
+      }
+    }
+
+    // 現在位置より前から、直近の0以外のTOPIX終値を探す
+    $mktPrevNonZero = null;
+    for ($j = $i - 1; $j >= 0; $j--) {
+      if (is_finite_num($mkt[$j]) && (float)$mkt[$j] != 0.0) {
+        $mktPrevNonZero = (float)$mkt[$j];
+        break;
+      }
+    }
+
+    // まだ過去に0以外の値が存在しない先頭部分は読み飛ばす
+    if ($symPrevNonZero === null || $mktPrevNonZero === null) {
+      continue;
+    }
+
+    if (!is_finite_num($sym[$i]) || !is_finite_num($mkt[$i])) {
+      continue;
+    }
+
+    $rs = ((float)$sym[$i] / $symPrevNonZero) - 1.0;
+    $rm = ((float)$mkt[$i] / $mktPrevNonZero) - 1.0;
+
     if (is_finite_num($rs) && is_finite_num($rm)) {
       $symRet[] = $rs;
       $mktRet[] = $rm;
     }
+  }
+
+  if (count($symRet) === 0 || count($mktRet) === 0) {
+    throw new DivisionByZeroError(
+      '銘柄またはTOPIXの終値がすべて0のため、市場指標を計算できません'
+    );
   }
   if (count($symRet) < 30) return null;
 
