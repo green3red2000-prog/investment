@@ -1,14 +1,14 @@
 <?php
 declare(strict_types=1);
 
-/**
- * 全銘柄日足分析
- * - Google Drive/Sheets: OAuth（本人）で読み込み＆アップロード
- * - MariaDB: stocks.prices_eod から最大220本取得して分析
- * - ローカルCSV作成 → Driveへアップロード → ローカル削除
- *
- * 参考：GAS版の分析ロジック（computeAllMetrics_ 等）をPHP移植
- */
+ /**
+  * 全銘柄日足分析
+  * - Google Drive/Sheets: OAuth（本人）で読み込み＆アップロード
+  * - MariaDB: stocks.prices_eod から最大220本取得して分析
+  * - ローカルCSV・メッセージTXT作成 → Driveへアップロード → ローカル削除
+  *
+  * 参考：GAS版の分析ロジック（computeAllMetrics_ 等）をPHP移植
+  */
 
 require __DIR__ . '/vendor/autoload.php';
 
@@ -69,9 +69,11 @@ function main(): void {
 
   ensureDir(TMP_DIR);
 
-  $outLocalPath = TMP_DIR . "/全銘柄日足分析_{$today}.csv"; // 拡張子は付けています（Drive側でも扱いやすい）
+  $outLocalPath = TMP_DIR . "/全銘柄日足分析_{$today}.csv";
   $outDriveName = "全銘柄日足分析_{$today}";
-
+  $messageLocalPath = TMP_DIR . "/全銘柄日足分析_メッセージ_{$today}.txt";
+  $messageDriveName = "全銘柄日足分析_メッセージ_{$today}.txt";
+  
   $client = buildOAuthClient();
   $drive  = new Google\Service\Drive($client);
   $sheets = new Google\Service\Sheets($client);
@@ -124,10 +126,17 @@ function main(): void {
   
   $processed = 0;
 
+  // メッセージファイル出力用の集計値
+  $targetCount = 0;
+  $normalCount = 0;
+  $errorCount  = 0;
+
   // 3) コードごと処理
   foreach ($codes as $code) {
     $code = trim((string)$code);
     if ($code === '') continue;
+    
+    $targetCount++;
 
     $rowBase = [
       '証券コード' => $code,
@@ -145,6 +154,7 @@ function main(): void {
         $rowBase['実行結果'] = 'エラー：データ不足(100件以下)';
         $outRow = buildOutputRow($rowBase, $calcHeaders, [], $baseInfoExtraHeaders, $baseInfoMap, $baseInfoExtraPos);
         fputcsv($fp, $outRow);
+        $errorCount++;
         continue;
       }
 
@@ -177,6 +187,7 @@ function main(): void {
       $outRow = buildOutputRow($rowBase, $calcHeaders, $metrics, $baseInfoExtraHeaders, $baseInfoMap, $baseInfoExtraPos);
       fputcsv($fp, $outRow);
       
+      $normalCount++;
       $processed++;
       echo "processed {$processed} codes.\n";
       if (TEST_LIMIT > 0 && $processed >= TEST_LIMIT) {
@@ -194,10 +205,12 @@ function main(): void {
         $baseInfoExtraPos
       );
       fputcsv($fp, $outRow);
+      $errorCount++;
       fwrite(STDERR, "[ZERO_DIVISION] code={$code} {$e->getMessage()}\n");
     } catch (Throwable $e) {
       $rowBase['実行結果'] = 'エラー：その他';
       $outRow = buildOutputRow($rowBase, $calcHeaders, [], $baseInfoExtraHeaders, $baseInfoMap, $baseInfoExtraPos);
+      $errorCount++;
       fputcsv($fp, $outRow);
       // 必要ならログ
       fwrite(STDERR, "[ERR] code={$code} {$e->getMessage()}\n");
@@ -206,17 +219,70 @@ function main(): void {
 
   fclose($fp);
 
-  // 4) Driveへアップロード → ローカル削除
+  // 7) テキストファイル出力
+  $messageText =
+    "全銘柄日足分析：{$today}\n\n" .
+    "処理を終了しました。\n\n" .
+    "銘柄数: {$targetCount} 件\n" .
+    "正常終了: {$normalCount} 件\n" .
+    "エラー : {$errorCount} 件\n";
+
+  $result = file_put_contents(
+    $messageLocalPath,
+    $messageText
+  );
+
+  if ($result === false) {
+    throw new RuntimeException(
+      "メッセージファイル作成に失敗: {$messageLocalPath}"
+    );
+  }
+
+  // 8) ファイルのアップロードと削除
   $uploadFolderId = resolveFolderIdByPath($drive, DRIVE_PATH_UPLOAD_OUT);
 
-  $created = uploadCsvAsGoogleSheetWithRetry($drive, $outLocalPath, $outDriveName, $uploadFolderId);
-  echo "Created Google Sheet: {$created->getName()} ({$created->getId()})\n";
+  // CSVをGoogleスプレッドシート形式でアップロード
+  $created = uploadCsvAsGoogleSheetWithRetry(
+    $drive,
+    $outLocalPath,
+    $outDriveName,
+    $uploadFolderId
+  );
 
+  echo
+    "Created Google Sheet: " .
+    "{$created->getName()} ({$created->getId()})\n";
 
-  // 削除
-  unlink($outLocalPath);
+  // CSVのアップロード完了後、メッセージTXTをアップロード
+  $messageCreated = uploadTextFileWithRetry(
+    $drive,
+    $messageLocalPath,
+    $messageDriveName,
+    $uploadFolderId
+  );
 
-  echo "DONE: uploaded to Drive folder (" . implode('/', DRIVE_PATH_UPLOAD_OUT) . ")\n";
+  echo
+    "Created message file: " .
+    "{$messageCreated->getName()} " .
+    "({$messageCreated->getId()})\n";
+
+  // 両方のアップロードが正常終了した場合のみ削除
+  if (!unlink($messageLocalPath)) {
+    throw new RuntimeException(
+      "メッセージファイル削除に失敗: {$messageLocalPath}"
+    );
+  }
+
+  if (!unlink($outLocalPath)) {
+    throw new RuntimeException(
+      "CSVファイル削除に失敗: {$outLocalPath}"
+    );
+  }
+
+  echo
+    "DONE: uploaded to Drive folder (" .
+    implode('/', DRIVE_PATH_UPLOAD_OUT) .
+    ")\n";
 }
 
 /* =========================================================
@@ -543,7 +609,41 @@ function uploadCsvAsGoogleSheet(
     'fields' => 'id,name,mimeType,parents',
   ]);
 }
+/**
+ * テキストファイルを通常のDriveファイルとしてアップロードする。
+ */
+function uploadTextFile(
+  Google\Service\Drive $drive,
+  string $localTextPath,
+  string $driveFileName,
+  string $folderId
+): Google\Service\Drive\DriveFile {
+  if (!file_exists($localTextPath)) {
+    throw new RuntimeException(
+      "local file not found: {$localTextPath}"
+    );
+  }
 
+  $fileMeta = new Google\Service\Drive\DriveFile([
+    'name' => $driveFileName,
+    'parents' => [$folderId],
+  ]);
+
+  $content = file_get_contents($localTextPath);
+
+  if ($content === false) {
+    throw new RuntimeException(
+      "テキストファイル読み込みに失敗: {$localTextPath}"
+    );
+  }
+
+  return $drive->files->create($fileMeta, [
+    'data' => $content,
+    'mimeType' => 'text/plain',
+    'uploadType' => 'multipart',
+    'fields' => 'id,name,mimeType,parents',
+  ]);
+}
 function uploadCsvAsGoogleSheetWithRetry(
   Google\Service\Drive $drive,
   string $localCsvPath,
@@ -596,7 +696,97 @@ function uploadCsvAsGoogleSheetWithRetry(
   exit(1);
 }
 
+/**
+ * テキストファイルをリトライ付きでアップロードする。
+ */
+function uploadTextFileWithRetry(
+  Google\Service\Drive $drive,
+  string $localTextPath,
+  string $driveFileName,
+  string $folderId
+): Google\Service\Drive\DriveFile {
+  $lastErr = null;
 
+  for ($try = 1; $try <= UPLOAD_RETRY_MAX; $try++) {
+    try {
+      return uploadTextFile(
+        $drive,
+        $localTextPath,
+        $driveFileName,
+        $folderId
+      );
+
+    } catch (Google\Service\Exception $e) {
+      $lastErr = $e;
+      $code = (int)$e->getCode();
+      $msg  = $e->getMessage();
+
+      $retryable =
+        $code === 503 ||
+        $code === 429 ||
+        stripos($msg, 'timed out') !== false ||
+        stripos($msg, 'timeout') !== false;
+
+      if ($retryable && $try < UPLOAD_RETRY_MAX) {
+        fwrite(
+          STDERR,
+          "[UPLOAD][retry {$try}/" .
+          UPLOAD_RETRY_MAX .
+          "] retryable error " .
+          "(code={$code}). sleep " .
+          UPLOAD_RETRY_SLEEP .
+          "s\n"
+        );
+
+        sleep(UPLOAD_RETRY_SLEEP);
+        continue;
+      }
+
+      break;
+
+    } catch (Throwable $e) {
+      $lastErr = $e;
+      $msg = $e->getMessage();
+
+      $retryable =
+        stripos($msg, 'timed out') !== false ||
+        stripos($msg, 'timeout') !== false;
+
+      if ($retryable && $try < UPLOAD_RETRY_MAX) {
+        fwrite(
+          STDERR,
+          "[UPLOAD][retry {$try}/" .
+          UPLOAD_RETRY_MAX .
+          "] timeout-like error. sleep " .
+          UPLOAD_RETRY_SLEEP .
+          "s\n"
+        );
+
+        sleep(UPLOAD_RETRY_SLEEP);
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  fwrite(
+    STDERR,
+    "Google側（Drive/Sheets API）の" .
+    "一時的なバックエンド障害／過負荷のため終了\n"
+  );
+
+  if ($lastErr) {
+    fwrite(
+      STDERR,
+      "[UPLOAD][FAILED] " .
+      $lastErr->getMessage() .
+      "\n"
+    );
+  }
+
+  exit(1);
+}
 /* =========================================================
  * DB
  * ========================================================= */
