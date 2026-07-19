@@ -1,12 +1,14 @@
-﻿Add-Content C:\work\task_trace.log "$(Get-Date) START"
-
-$BaseDir = 'C:\work\share\development\investment\PowerShell'
+﻿$BaseDir = 'C:\work\share\development\investment\PowerShell'
 
 $DownloadScript = Join-Path $BaseDir 'daily_market_snapshot.ps1'
 $UploadScript   = Join-Path $BaseDir 'upload_daily_market_snapshot.ps1'
 
 $LogDir = Join-Path $BaseDir 'logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+$TaskTracePath = Join-Path $LogDir "task_trace.log"
+
+Add-Content -Path $TaskTracePath -Value "$(Get-Date) START" -Encoding UTF8
 
 $Today = Get-Date -Format 'yyyyMMdd'
 $LogPath = Join-Path $LogDir "run_daily_market_snapshot_all_$Today.log"
@@ -51,7 +53,7 @@ try {
   $ExitCode = 1
   
 } finally {
-  Add-Content C:\work\task_trace.log "$(Get-Date) END exit=$ExitCode"
+  Add-Content -Path $TaskTracePath -Value "$(Get-Date) END exit=$ExitCode" -Encoding UTF8
 }
 
 exit $ExitCode
