@@ -85,8 +85,19 @@ function main(array $argv): void
             $drive = new Google\Service\Drive($client);
             $folderId = resolve_folder_id_by_path($drive, GDRIVE_STATE_PATH);
 
-            $existsFunc = function () use ($drive, $folderId, $gdriveName): bool {
-                return gdrive_file_exists($drive, $folderId, $gdriveName);
+            $existsFunc = function () use (
+                $tokenJson,
+                $folderId,
+                $gdriveName
+            ): bool {
+                $client = build_google_client($tokenJson);
+                $drive = new Google\Service\Drive($client);
+
+                return gdrive_file_exists(
+                    $drive,
+                    $folderId,
+                    $gdriveName
+                );
             };
         }
         
