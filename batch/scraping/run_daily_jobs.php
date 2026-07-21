@@ -132,7 +132,113 @@ try {
     );
 
     // --------------------------------------------------------
-    // 2. スクレイピング待ち
+    // 2. J-QuantsAPIで証券コードマスタ更新
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        SECURITY_CODE_MASTER_SCRIPT
+    );
+
+    runCommand(
+        '2. J-QuantsAPIで証券コードマスタ更新',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 3. 反映待ち（GAS：証券コードマスタ）
+    // --------------------------------------------------------
+
+    $securityMasterMarker = sprintf(
+        'complete_security_master_%s.txt',
+        $targetDateYmd8
+    );
+
+    $command = buildPhpCommand(
+        WAIT_MARKER_SCRIPT,
+        [
+            '--gdrive=' . $securityMasterMarker,
+            '--timeout=120',
+            '--interval=30',
+            '--optional=0',
+        ]
+    );
+
+    runCommand(
+        '3. 反映待ち（GAS：証券コードマスタ）',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 4. J-QuantsAPIでカレンダー更新
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        MARKET_CALENDAR_SCRIPT
+    );
+
+    runCommand(
+        '4. J-QuantsAPIでカレンダー更新',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 5. 反映待ち（GAS：カレンダーマスタ）
+    // --------------------------------------------------------
+
+    $calendarMarker = sprintf(
+        'complete_calendar_%s.txt',
+        $targetDateYmd8
+    );
+
+    $command = buildPhpCommand(
+        WAIT_MARKER_SCRIPT,
+        [
+            '--gdrive=' . $calendarMarker,
+            '--timeout=120',
+            '--interval=30',
+            '--optional=0',
+        ]
+    );
+
+    runCommand(
+        '5. 反映待ち（GAS：カレンダーマスタ）',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 6. J-QuantsAPIで全銘柄日足取得
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        ZENMEIGARA_HIASHI_SCRIPT
+    );
+
+    runCommand(
+        '6. J-QuantsAPIで全銘柄日足取得',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 7. J-QuantsAPIで全銘柄基本情報取得
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        ZENMEIGARA_BASICINFO_SCRIPT
+    );
+
+    runCommand(
+        '7. J-QuantsAPIで全銘柄基本情報取得',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 8. スクレイピング待ち
     // --------------------------------------------------------
 
     $snapshotMarkerPath = sprintf(
@@ -145,21 +251,21 @@ try {
         WAIT_MARKER_SCRIPT,
         [
             '--path=' . $snapshotMarkerPath,
-            '--timeout=1800',
-            '--interval=120',
+            '--timeout=120',
+            '--interval=30',
             '--optional=1',
         ]
     );
 
     $snapshotWaitResult = runCommand(
-        '2. スクレイピング待ち',
+        '8. スクレイピング待ち',
         $snapshotWaitCommand,
         $logFile,
         [0, 10]
     );
 
     // --------------------------------------------------------
-    // 3. 反映待ち（スクレイピングデータ）
+    // 9. スクレイピングデータの反映処理
     // --------------------------------------------------------
 
     if ($snapshotWaitResult === 0) {
@@ -168,124 +274,18 @@ try {
         );
 
         runCommand(
-            '3. 反映待ち（スクレイピングデータ）',
+            '9. スクレイピングデータの反映処理',
             $command,
             $logFile
         );
     } else {
         logMessage(
-            '3. 反映待ち（スクレイピングデータ）をスキップします。' .
+            '9. スクレイピングデータの反映処理をスキップします。' .
             'スクレイピング待ちがoptionalタイムアウトしました。',
             $logFile,
             'WARN'
         );
     }
-
-    // --------------------------------------------------------
-    // 4. J-QuantsAPIで証券コードマスタ更新
-    // --------------------------------------------------------
-
-    $command = buildPhpCommand(
-        SECURITY_CODE_MASTER_SCRIPT
-    );
-
-    runCommand(
-        '4. J-QuantsAPIで証券コードマスタ更新',
-        $command,
-        $logFile
-    );
-
-    // --------------------------------------------------------
-    // 5. 反映待ち（GAS：証券コードマスタ）
-    // --------------------------------------------------------
-
-    $securityMasterMarker = sprintf(
-        'complete_security_master_%s.txt',
-        $targetDateYmd8
-    );
-
-    $command = buildPhpCommand(
-        WAIT_MARKER_SCRIPT,
-        [
-            '--gdrive=' . $securityMasterMarker,
-            '--timeout=1800',
-            '--interval=30',
-            '--optional=0',
-        ]
-    );
-
-    runCommand(
-        '5. 反映待ち（GAS：証券コードマスタ）',
-        $command,
-        $logFile
-    );
-
-    // --------------------------------------------------------
-    // 6. J-QuantsAPIでカレンダー更新
-    // --------------------------------------------------------
-
-    $command = buildPhpCommand(
-        MARKET_CALENDAR_SCRIPT
-    );
-
-    runCommand(
-        '6. J-QuantsAPIでカレンダー更新',
-        $command,
-        $logFile
-    );
-
-    // --------------------------------------------------------
-    // 7. 反映待ち（GAS：カレンダーマスタ）
-    // --------------------------------------------------------
-
-    $calendarMarker = sprintf(
-        'complete_calendar_%s.txt',
-        $targetDateYmd8
-    );
-
-    $command = buildPhpCommand(
-        WAIT_MARKER_SCRIPT,
-        [
-            '--gdrive=' . $calendarMarker,
-            '--timeout=1800',
-            '--interval=30',
-            '--optional=0',
-        ]
-    );
-
-    runCommand(
-        '7. 反映待ち（GAS：カレンダーマスタ）',
-        $command,
-        $logFile
-    );
-
-    // --------------------------------------------------------
-    // 8. J-QuantsAPIで全銘柄日足取得
-    // --------------------------------------------------------
-
-    $command = buildPhpCommand(
-        ZENMEIGARA_HIASHI_SCRIPT
-    );
-
-    runCommand(
-        '8. J-QuantsAPIで全銘柄日足取得',
-        $command,
-        $logFile
-    );
-
-    // --------------------------------------------------------
-    // 9. J-QuantsAPIで全銘柄基本情報取得
-    // --------------------------------------------------------
-
-    $command = buildPhpCommand(
-        ZENMEIGARA_BASICINFO_SCRIPT
-    );
-
-    runCommand(
-        '9. J-QuantsAPIで全銘柄基本情報取得',
-        $command,
-        $logFile
-    );
 
     // --------------------------------------------------------
     // 10. 全銘柄日足分析
