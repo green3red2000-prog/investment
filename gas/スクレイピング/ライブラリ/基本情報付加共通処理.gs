@@ -1,12 +1,12 @@
-﻿/**  BaseInfo Library（シート参照版・パターン可変｜全シート合算 writeLimit｜上限到達=戻り0）
+/**  BaseInfo Library（シート参照版・パターン可変｜全シート合算 writeLimit｜上限到達=戻り0）
  *  更新点（今回）：
  *    - config.startCol が 0 の場合、各シートの「右端の次列」を出力開始列として採用
  *
  *  既存の更新点：
  *    - fetchIntervalMs 廃止済み
- *    - 出力見出しを config.headerPattern で切替（0/未指定=従来36列, 1, 2, 3）
+ *    - 出力見出しを config.headerPattern で切替（0/未指定=基本パターン, 1, 2, 3）
  *    - config.sheetName が ''（空）の場合、スプレッドシート内の全シートを対象（1枚でもその1枚を処理）
- *    - writeLimit は全シート合算の上限（既定: 2000 / 0=無制限）。上限到達時は **戻り値0** ＆ ログ「上限到達で途中終了 (0)」
+ *    - writeLimit は全シート合算の上限（既定: 5000 / 0=無制限）。上限到達時は **戻り値0** ＆ ログ「上限到達で途中終了 (0)」
  *
  *  公開関数: BaseInfo_run(config)
  *
@@ -17,65 +17,55 @@
  *    companyNameCol    : number   … 会社名列（既定: 4 = D列）
  *    codeCol           : number   … 銘柄コードの入力列（既定: 3 = C列）
  *    sheetName         : string   … シート名（既定: 'シート1'。''なら全シートを対象）
- *    kabutanLinkType   : number   … 株探リンク種別（1〜6, 既定=1）
- *    writeLimit        : number   … 書き出し合算上限（既定: 2000。0=無制限）
+ *    kabutanLinkType   : number   … 株探リンク種別（1〜6, 既定=2）
+ *    writeLimit        : number   … 書き出し合算上限（既定: 5000。0=無制限）
  *    bottomLineCol     : number   … 罫線・重複値圧縮の対象列（既定: 0 = 実行しない）
- *    headerPattern     : number   … 出力見出しパターン（0/未指定=従来36列, 1, 2, 3）
+ *    headerPattern     : number   … 出力見出しパターン（0/未指定=基本パターン, 1, 2, 3）
  */
 
 // ====== デフォルト設定 ======
 const __DFLT__ = {
+  timeZone: 'Asia/Tokyo',
   startCol: 7,
   companyNameCol: 4,
   codeCol: 3,
   sheetName: 'シート1',
   folderName: '出力結果',
-  kabutanLinkType: 1,
-  writeLimit: 2000,        // 既定2000（0なら無制限）
+  kabutanLinkType: 2,
+  writeLimit: 5000,        // 既定5000（0なら無制限）
   bottomLineCol: 0,
-  headerPattern: 0
+  headerPattern: 0,
+  freezeRows: 0,
+  freezeCols: 0
 };
 
 // ====== 出力見出しパターン ======
 const OUTPUT_HEADERS_BASE = [
-  '業種','概要','株探','四季','銘偵',
+  '業種','株探','四季','銘偵','全銘','特色','連結事業','決算発表予定日',
   '時価総額','上場区分','PER','PBR','利回り',
+  '(96)AI基準判定',
+  '四季報スコア',
+  '(97)タイプ分類',
+  '(104)パーフェクトオーダー判定',
+  '(84)連続日数',
+  '(12)終値の直近22日間の回帰係数',
+  '(51)終値5日移動平均と終値の移動平均乖離率',
+  '(53)終値22日移動平均と終値の移動平均乖離率',
+  '(55)終値66日移動平均と終値の移動平均乖離率',
+  '(98)信用買い残日数',
+  '(80)RSI',
+  '(128)週足RSI',
+  '(130)ストキャスティクス%K',
+  '(132)週足ストキャスティクス%K',
+  '(138)ボリンジャーバンドのσ値',
+  '(99)直近5日間の値幅不安定率',
+  '(86)10日間上昇率',
+  '(90)10日間下落率',
+  '(72)β',
+  '(73)相関',
   '終値','前日比','騰落率','出来高',
   '売上高','経常益','最終益',
   '信用日付','信用売り残','信用買い残','信用倍率',
-  '(96) AI基準判定',
-  '(10)終値の直近5日間の回帰係数',
-  '(11)終値の直近10日間の回帰係数',
-  '(12)終値の直近22日間の回帰係数',
-  '(13)終値の直近45日間の回帰係数',
-  '(14)終値の直近90日間の回帰係数',
-  '(15)出来高の直近5日間の回帰係数',
-  '(16)出来高の直近10日間の回帰係数',
-  '(17)出来高の直近22日間の回帰係数',
-  '(18)出来高の直近45日間の回帰係数',
-  '(19)出来高の直近90日間の回帰係数',
-  '(30)終値5日移動平均の直近5日の回帰係数',
-  '(31)終値10日移動平均の直近10日の回帰係数',
-  '(32)終値22日移動平均の直近10日の回帰係数',
-  '(33)終値45日移動平均の直近10日の回帰係数',
-  '(34)終値90日移動平均の直近10日の回帰係数',
-  '(35)出来高5日移動平均の直近5日の回帰係数',
-  '(36)出来高10日移動平均の直近10日の回帰係数',
-  '(37)出来高22日移動平均の直近10日の回帰係数',
-  '(38)出来高45日移動平均の直近10日の回帰係数',
-  '(39)出来高90日移動平均の直近10日の回帰係数',
-  '(84) 連続日数',
-  '(86) 10日間上昇率',
-  '(90) 10日間下落率',
-  '(72) β',
-  '(73) 相関',
-  '(74) 相対ボラ',
-  '(75) 残差ボラ',
-  '(76) アップサイドβ',
-  '(77) ダウンサイドβ',
-  '(78) Up Capture',
-  '(79) Down Capture',
-  '(92) 低ボラ出来高増'
 ];
 
 const OUTPUT_HEADERS_PTN1 = [
@@ -92,58 +82,89 @@ const OUTPUT_HEADERS_PTN2 = [
   '終値','前日比','騰落率','出来高',
   '売上高','経常益','最終益',
   '信用日付','信用売り残','信用買い残','信用倍率',
-  '(96) AI基準判定'
+  '(96)AI基準判定'
 ];
 
 const OUTPUT_HEADERS_PTN3 = [
-  '(96) AI基準判定',
+  '(96)AI基準判定',
   '(10)終値の直近5日間の回帰係数',
   '(11)終値の直近10日間の回帰係数',
   '(12)終値の直近22日間の回帰係数',
-  '(13)終値の直近45日間の回帰係数',
-  '(14)終値の直近90日間の回帰係数',
+  '(13)終値の直近66日間の回帰係数',
+  '(14)終値の直近132日間の回帰係数',
   '(15)出来高の直近5日間の回帰係数',
   '(16)出来高の直近10日間の回帰係数',
   '(17)出来高の直近22日間の回帰係数',
-  '(18)出来高の直近45日間の回帰係数',
-  '(19)出来高の直近90日間の回帰係数',
+  '(18)出来高の直近66日間の回帰係数',
+  '(19)出来高の直近132日間の回帰係数',
   '(30)終値5日移動平均の直近5日の回帰係数',
   '(31)終値10日移動平均の直近10日の回帰係数',
   '(32)終値22日移動平均の直近10日の回帰係数',
-  '(33)終値45日移動平均の直近10日の回帰係数',
-  '(34)終値90日移動平均の直近10日の回帰係数',
+  '(33)終値66日移動平均の直近10日の回帰係数',
+  '(34)終値132日移動平均の直近10日の回帰係数',
   '(35)出来高5日移動平均の直近5日の回帰係数',
   '(36)出来高10日移動平均の直近10日の回帰係数',
   '(37)出来高22日移動平均の直近10日の回帰係数',
-  '(38)出来高45日移動平均の直近10日の回帰係数',
-  '(39)出来高90日移動平均の直近10日の回帰係数',
-  '(84) 連続日数',
-  '(86) 10日間上昇率',
-  '(90) 10日間下落率',
-  '(72) β',
-  '(73) 相関',
-  '(74) 相対ボラ',
-  '(75) 残差ボラ',
-  '(76) アップサイドβ',
-  '(77) ダウンサイドβ',
-  '(78) Up Capture',
-  '(79) Down Capture',
-  '(80) RSI',
-  '(81) RSIの直近22日間の回帰係数',
-  '(82) MACD',
-  '(83) MACDの直近22日間の回帰係数',
-  '(92) 低ボラ出来高増',
-  '(93) 水平ライン上突破',
-  '(94) 水平ライン下突破',
-  '(95) GUPから全モ'
+  '(38)出来高66日移動平均の直近10日の回帰係数',
+  '(39)出来高132日移動平均の直近10日の回帰係数',
+  '(84)連続日数',
+  '(86)10日間上昇率',
+  '(90)10日間下落率',
+  '(72)β',
+  '(73)相関',
+  '(74)相対ボラ',
+  '(75)残差ボラ',
+  '(76)アップサイドβ',
+  '(77)ダウンサイドβ',
+  '(78)Up Capture',
+  '(79)Down Capture',
+  '(80)RSI',
+  '(81)RSIの直近22日間の回帰係数',
+  '(82)MACD',
+  '(83)MACDの直近22日間の回帰係数',
+  '(92)低ボラ出来高増',
+  '(93)水平ライン上突破',
+  '(94)水平ライン下突破',
+  '(95)GUPから全モ'
 ];
+
+// ====== 列フォーマット定義 ======
+const FORMAT_DECIMAL_2 = [
+  '(98)信用買い残日数',
+  '(12)終値の直近22日間の回帰係数',
+  '(80)RSI',
+  '(81)RSIの直近22日間の回帰係数',
+  '(72)β','(73)相関','(74)相対ボラ','(75)残差ボラ',
+  '(76)アップサイドβ','(77)ダウンサイドβ',
+  '(128)週足RSI','(130)ストキャスティクス%K','(132)週足ストキャスティクス%K','(138)ボリンジャーバンドのσ値'
+];
+
+const FORMAT_PERCENT_X100 = [
+  '(99)直近5日間の値幅不安定率',
+  '(51)終値5日移動平均と終値の移動平均乖離率',
+  '(53)終値22日移動平均と終値の移動平均乖離率',
+  '(55)終値66日移動平均と終値の移動平均乖離率',
+  '(78)Up Capture',
+  '(79)Down Capture'
+];
+
+const FORMAT_PERCENT = [
+  '(86)10日間上昇率',
+  '(90)10日間下落率'
+];
+
 
 // ====== 公開関数 ======
 function BaseInfo_run(config) {
   const cfg = normalizeConfig_(config);
   let ss;
   try {
-    ss = getOrCreateSpreadsheetInFolder_(cfg.spreadsheetName, cfg.folderName);
+    // 呼び出し元から spreadsheetId が渡されていれば、それを最優先で開く
+    if (config && config.spreadsheetId) {
+      ss = SpreadsheetApp.openById(String(config.spreadsheetId));
+    } else {
+      ss = getOrCreateSpreadsheetInFolder_(cfg.spreadsheetName, cfg.folderName);
+    }
   } catch (e) {
     Logger.log("書き出した件数: エラーで処理中断 (-1)");
     return -1;
@@ -230,8 +251,7 @@ function BaseInfo_run(config) {
 // ====== 設定正規化 ======
 function normalizeConfig_(config) {
   const now = new Date();
-  const defaultSpreadsheetName =
-    `決算速報_${Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`;
+  const defaultSpreadsheetName = `無名文書_${Utilities.formatDate(now, __DFLT__.timeZone, 'yyyy-MM-dd')}`;
   const c = config || {};
   return {
     spreadsheetName: (c.spreadsheetName && String(c.spreadsheetName).trim()) || defaultSpreadsheetName,
@@ -241,9 +261,11 @@ function normalizeConfig_(config) {
     codeCol        : isFinite(c.codeCol) ? Number(c.codeCol)                 : __DFLT__.codeCol,
     sheetName      : (c.sheetName != null) ? String(c.sheetName)             : __DFLT__.sheetName, // 空文字許容
     kabutanLinkType: isFinite(c.kabutanLinkType) ? Number(c.kabutanLinkType) : __DFLT__.kabutanLinkType,
-    writeLimit     : (isFinite(c.writeLimit) ? Number(c.writeLimit) : __DFLT__.writeLimit), // 既定2000
+    writeLimit     : (isFinite(c.writeLimit) ? Number(c.writeLimit) : __DFLT__.writeLimit), // 既定5000
     bottomLineCol  : isFinite(c.bottomLineCol) ? Number(c.bottomLineCol)     : __DFLT__.bottomLineCol,
-    headerPattern  : isFinite(c.headerPattern) ? Number(c.headerPattern)     : __DFLT__.headerPattern
+    headerPattern  : isFinite(c.headerPattern) ? Number(c.headerPattern)     : __DFLT__.headerPattern,
+    freezeRows     : isFinite(c.freezeRows) ? Number(c.freezeRows)           : __DFLT__.freezeRows,
+    freezeCols     : isFinite(c.freezeCols) ? Number(c.freezeCols)           : __DFLT__.freezeCols
   };
 }
 
@@ -278,10 +300,15 @@ function resolveStartCol_(sh, cfgStartCol) {
 function writeFromSheetsCore_(sh, cfg, idx1, idx2) {
   const OUTPUT_HEADERS = getOutputHeaders_(cfg.headerPattern);
 
-  // ★ startCol を確定（0指定時は右端の次列）
+  // startCol を確定（0指定時は右端の次列）
   const startCol = resolveStartCol_(sh, cfg.startCol);
 
   ensureHeader_(sh, startCol, OUTPUT_HEADERS);
+
+  // 固定表示（必要なら）＋固定行の背景色
+  // 背景塗りの右端は「シート既存」vs「このライブラリが使う列」の max にする
+  const headerRightCol = startCol + OUTPUT_HEADERS.length - 1;
+  applyFreeze_(sh, cfg.freezeRows, cfg.freezeCols, headerRightCol);
 
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return { written: 0, hitLimit: false, error: false };
@@ -323,11 +350,14 @@ function writeFromSheetsCore_(sh, cfg, idx1, idx2) {
       const kabutanLink = `=HYPERLINK("${kabutanUrl}","株")`;
       const shikihoLink = `=HYPERLINK("https://shikiho.toyokeizai.net/stocks/${code}","季")`;
       const meiteiLink  = `=HYPERLINK("https://monex.ifis.co.jp/index.php?sa=find&ta=e&wd=${code}&x=0&y=0","銘")`;
+      const zenmeiLink  = `=HYPERLINK("http://133.18.243.68/api/master_view.php?mode=api&text=${code}","全")`;
 
       const rowData = OUTPUT_HEADERS.map((label) => {
         if (label === '株探') return kabutanLink;
         if (label === '四季') return shikihoLink;
         if (label === '銘偵') return meiteiLink;
+        if (label === '全銘') return zenmeiLink;
+
         const v1 = rec1 ? pickByHeader_(rec1, label) : '';
         const v2 = rec2 ? pickByHeader_(rec2, label) : '';
         return valuePrefer_(v1, v2);
@@ -346,13 +376,13 @@ function writeFromSheetsCore_(sh, cfg, idx1, idx2) {
     }
 
     // 書式（列位置は startCol 基準）
-    const rightAlignIdx = ['終値','前日比','騰落率','出来高','時価総額','PER','PBR','利回り']
+    const rightAlignIdx = ['終値','前日比','騰落率','出来高','時価総額','PER','PBR','利回り','(86)10日間上昇率','(90)10日間下落率']
       .map(lbl => OUTPUT_HEADERS.indexOf(lbl)).filter(i => i >= 0);
     rightAlignIdx.forEach(idx => {
       sh.getRange(2, startCol + idx, numRows, 1).setHorizontalAlignment('right');
     });
 
-    ['株探','四季','銘偵']
+    ['株探','四季','銘偵','全銘']
       .map(lbl => OUTPUT_HEADERS.indexOf(lbl)).filter(i => i >= 0)
       .forEach(idx => {
         sh.getRange(2, startCol + idx, numRows, 1).setHorizontalAlignment('center');
@@ -362,6 +392,37 @@ function writeFromSheetsCore_(sh, cfg, idx1, idx2) {
     if (perIdx >= 0) sh.getRange(2, startCol + perIdx, numRows, 1).setNumberFormat('0.0');
     const pbrIdx = OUTPUT_HEADERS.indexOf('PBR');
     if (pbrIdx >= 0) sh.getRange(2, startCol + pbrIdx, numRows, 1).setNumberFormat('0.00');
+
+    
+    // 小数点以下2桁
+    FORMAT_DECIMAL_2.forEach(lbl => {
+      const idx = OUTPUT_HEADERS.indexOf(lbl);
+      if (idx >= 0) {
+        sh.getRange(2, startCol + idx, numRows, 1).setNumberFormat('0.00');
+      }
+    });
+
+    // ■ 100倍して %
+    FORMAT_PERCENT_X100.forEach(lbl => {
+      const idx = OUTPUT_HEADERS.indexOf(lbl);
+      if (idx >= 0) {
+        sh.getRange(2, startCol + idx, numRows, 1).setNumberFormat('0.00%');
+      }
+    });
+
+    // ◆ 数値はそのまま、末尾に % を付与（×100しない）
+    FORMAT_PERCENT.forEach(lbl => {
+      const idx = OUTPUT_HEADERS.indexOf(lbl);
+      if (idx >= 0) {
+        const rng = sh.getRange(2, startCol + idx, numRows, 1);
+        const vals = rng.getValues().map(r => {
+          const v = r[0];
+          if (v === '' || v == null) return [''];
+          return [`${Number(v).toFixed(2)}%`];
+        });
+        rng.setNumberFormat('@').setValues(vals);
+      }
+    });
 
     return { written: writeCount, hitLimit, error: false };
   } catch (e) {
@@ -493,4 +554,22 @@ function getOrCreateSpreadsheetInFolder_(name, folderName) {
 function getOrCreateFolderByName_(folderName) {
   const it = DriveApp.getFoldersByName(folderName);
   return it.hasNext() ? it.next() : DriveApp.createFolder(folderName);
+}
+
+function applyFreeze_(sh, freezeRows, freezeCols, rightColHint) {
+  const r = Math.max(0, Number(freezeRows) || 0);
+  const c = Math.max(0, Number(freezeCols) || 0);
+
+  if (r > 0) sh.setFrozenRows(r); else sh.setFrozenRows(0);
+  if (c > 0) sh.setFrozenColumns(c); else sh.setFrozenColumns(0);
+
+  // 固定表示行はオレンジ背景（列はシートの右端まで）
+  if (r > 0) {
+    const lastCol = Math.max(
+      1,
+      sh.getLastColumn() || 1,
+      Number(rightColHint) || 1
+    );
+    sh.getRange(1, 1, r, lastCol).setBackground('#FFA500');
+  }
 }
