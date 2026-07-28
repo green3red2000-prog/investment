@@ -1,3 +1,9 @@
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateSet('000', '001')]
+  [string]$Mode
+)
+
 # Debug mode: 1 = local check only, 0 = normal download
 # Test check number
 
@@ -244,6 +250,31 @@ $Items = @(
 Write-Host "[DEBUG] script path = $PSCommandPath"
 Write-Host "[DEBUG] TestMode = $TestMode"
 Write-Host "[DEBUG] TestCheck = $TestCheck"
+
+# Filter scraping targets based on the execution mode.
+# 000: Index daily price files only (07_)
+# 001: All files except index daily price files (01_ through 06_)
+if ($Mode -eq '000') {
+  $Items = @(
+    $Items | Where-Object {
+      $_.File -like '07_*'
+    }
+  )
+} else {
+  $Items = @(
+    $Items | Where-Object {
+      $_.File -match '^0[1-6]_'
+    }
+  )
+}
+
+if ($Items.Count -eq 0) {
+  throw "scraping target not found. mode=$Mode"
+}
+
+Write-Host "[INFO] mode=$Mode"
+Write-Host "[INFO] target items=$($Items.Count)"
+
 
 function Wait-Cdp {
   param($Port)
@@ -1023,4 +1054,4 @@ if ($FailedItems.Count -gt 0) {
   throw 'download finished with errors'
 }
 
-Write-Host '[DONE] all finished'
+Write-Host "[DONE] scraping finished. mode=$Mode"

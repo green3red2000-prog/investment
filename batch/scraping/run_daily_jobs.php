@@ -224,7 +224,60 @@ try {
     );
 
     // --------------------------------------------------------
-    // 7. J-QuantsAPIで全銘柄基本情報取得
+    // 7. スクレイピング待ち（000）
+    // --------------------------------------------------------
+
+    $snapshotMarkerPath000 = sprintf(
+        '/opt/invest/scraping/state/upload/' .
+        'complete_upload_daily_market_snapshot_%s_000.txt',
+        $targetDateYmd8
+    );
+
+    $snapshotWaitCommand000 = buildPhpCommand(
+        WAIT_MARKER_SCRIPT,
+        [
+            '--path=' . $snapshotMarkerPath000,
+            '--timeout=120',
+            '--interval=30',
+            '--optional=1',
+        ]
+    );
+
+    $snapshotWaitResult000 = runCommand(
+        '7. スクレイピング待ち（000）',
+        $snapshotWaitCommand000,
+        $logFile,
+        [0, 10]
+    );
+
+    if ($snapshotWaitResult000 === 10) {
+        logMessage(
+            'スクレイピング待ち（000）がoptionalタイムアウトしました。' .
+            '指数データを反映できないため、後続処理を終了します。',
+            $logFile,
+            'WARN'
+        );
+
+        exit(0);
+    }
+
+    // --------------------------------------------------------
+    // 8. スクレイピングデータの反映処理（000）
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        DAILY_MARKET_SNAPSHOT_JOBS_SCRIPT,
+        ['000']
+    );
+
+    runCommand(
+        '8. スクレイピングデータの反映処理（000）',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 9. J-QuantsAPIで全銘柄基本情報取得
     // --------------------------------------------------------
 
     $command = buildPhpCommand(
@@ -232,63 +285,64 @@ try {
     );
 
     runCommand(
-        '7. J-QuantsAPIで全銘柄基本情報取得',
+        '9. J-QuantsAPIで全銘柄基本情報取得',
         $command,
         $logFile
     );
 
     // --------------------------------------------------------
-    // 8. スクレイピング待ち
+    // 10. スクレイピング待ち（001）
     // --------------------------------------------------------
 
-    $snapshotMarkerPath = sprintf(
+    $snapshotMarkerPath001 = sprintf(
         '/opt/invest/scraping/state/upload/' .
-        'complete_upload_daily_market_snapshot_%s.txt',
+        'complete_upload_daily_market_snapshot_%s_001.txt',
         $targetDateYmd8
     );
 
-    $snapshotWaitCommand = buildPhpCommand(
+    $snapshotWaitCommand001 = buildPhpCommand(
         WAIT_MARKER_SCRIPT,
         [
-            '--path=' . $snapshotMarkerPath,
+            '--path=' . $snapshotMarkerPath001,
             '--timeout=120',
             '--interval=30',
             '--optional=1',
         ]
     );
 
-    $snapshotWaitResult = runCommand(
-        '8. スクレイピング待ち',
-        $snapshotWaitCommand,
+    $snapshotWaitResult001 = runCommand(
+        '10. スクレイピング待ち（001）',
+        $snapshotWaitCommand001,
         $logFile,
         [0, 10]
     );
 
     // --------------------------------------------------------
-    // 9. スクレイピングデータの反映処理
+    // 11. スクレイピングデータの反映処理（001）
     // --------------------------------------------------------
 
-    if ($snapshotWaitResult === 0) {
+    if ($snapshotWaitResult001 === 0) {
         $command = buildPhpCommand(
-            DAILY_MARKET_SNAPSHOT_JOBS_SCRIPT
+            DAILY_MARKET_SNAPSHOT_JOBS_SCRIPT,
+            ['001']
         );
 
         runCommand(
-            '9. スクレイピングデータの反映処理',
+            '11. スクレイピングデータの反映処理（001）',
             $command,
             $logFile
         );
     } else {
         logMessage(
-            '9. スクレイピングデータの反映処理をスキップします。' .
-            'スクレイピング待ちがoptionalタイムアウトしました。',
+            '11. スクレイピングデータの反映処理（001）をスキップします。' .
+            'スクレイピング待ち（001）がoptionalタイムアウトしました。',
             $logFile,
             'WARN'
         );
     }
 
     // --------------------------------------------------------
-    // 10. 全銘柄日足分析
+    // 12. 全銘柄日足分析
     // --------------------------------------------------------
 
     $command = buildPhpCommand(
@@ -296,7 +350,7 @@ try {
     );
 
     runCommand(
-        '10. 全銘柄日足分析',
+        '12. 全銘柄日足分析',
         $command,
         $logFile
     );

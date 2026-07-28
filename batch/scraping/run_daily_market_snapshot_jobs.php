@@ -1,32 +1,51 @@
 <?php
 declare(strict_types=1);
 
-/**
- * 日次HTML取込 親ジョブ
- *
- * 上位親ジョブから起動
- *
- * 通常起動：
- *   - /opt/invest/scraping/state/upload/complete_upload_daily_market_snapshot_YYYYMMDD.txt を確認
- *   - 中身が本日YYYY-MM-DDでなければ終了
- *   - 子PHPを通常起動モードで順番に実行
- *   - 完了マーカーファイルは削除せず、そのまま残す
- *
- * リカバリ起動例：
- *   php run_daily_market_snapshot_jobs.php YYYY-MM-DD
- *
- * リカバリ起動時：以下を順次実行。
- *   daily_market_snapshot.php --date=2026-06-15 --force
- *   kabuhoyu_sokuhou.php 2026-06-15
- *   tekiji_disclosure.php 2026-06-15
- *   kessan_sokuhou.php 2026-06-15
- *   pts_morning_news.php 2026-06-15 --force
- *   index_eod_import_from_saved_html.php --target_date=2026-06-15
- *   
- *   ※リカバリ起動時は、日付付きの完了マーカーファイルが無くても動作します。
- * ログ：
- *   上位親ジョブ側でリダイレクトして出力する
- */
+ /**
+  * 日次HTML取込 親ジョブ
+  *
+  * 上位親ジョブから起動
+  *
+  * 通常起動：
+  *   php run_daily_market_snapshot_jobs.php 000
+  *   php run_daily_market_snapshot_jobs.php 001
+  *
+  *   モード000：
+  *   - /opt/invest/scraping/state/upload/complete_upload_daily_market_snapshot_YYYYMMDD_000.txt を確認
+  *   - 中身が本日YYYY-MM-DDでなければ終了
+  *   - index_eod_import_from_saved_html.php を実行
+  *
+  *   モード001：
+  *   - /opt/invest/scraping/state/upload/complete_upload_daily_market_snapshot_YYYYMMDD_001.txt を確認
+  *   - 中身が本日YYYY-MM-DDでなければ終了
+  *   - 以下の子PHPを順番に実行
+  *     daily_market_snapshot.php
+  *     kabuhoyu_sokuhou.php
+  *     tekiji_disclosure.php
+  *     kessan_sokuhou.php
+  *     pts_morning_news.php
+  *
+  *   - 完了マーカーファイルは削除せず、そのまま残す
+  *
+  * リカバリ起動例：
+  *   php run_daily_market_snapshot_jobs.php 000 2026-06-15
+  *   php run_daily_market_snapshot_jobs.php 001 2026-06-15
+  *
+  * リカバリ起動時：
+  *   モード000：
+  *     index_eod_import_from_saved_html.php --target_date=2026-06-15
+  *
+  *   モード001：
+  *     daily_market_snapshot.php --date=2026-06-15 --force
+  *     kabuhoyu_sokuhou.php 2026-06-15
+  *     tekiji_disclosure.php 2026-06-15
+  *     kessan_sokuhou.php 2026-06-15
+  *     pts_morning_news.php 2026-06-15 --force
+  *   
+  *   ※リカバリ起動時は、日付付きの完了マーカーファイルが無くても動作します。
+  * ログ：
+  *   上位親ジョブ側でリダイレクトして出力する
+  */
 
 date_default_timezone_set('Asia/Tokyo');
 
@@ -77,10 +96,22 @@ function runChild(string $scriptPath, array $args = []): void {
   logMsg("OK: {$scriptPath}");
 }
 
-$argDate = $argv[1] ?? '';
+$mode = $argv[1] ?? '';
+$argDate = $argv[2] ?? '';
+
+if (!in_array($mode, ['000', '001'], true)) {
+  throw new InvalidArgumentException(
+    "起動モードは000または001を指定してください: {$mode}"
+  );
+}
+
 $isRecovery = ($argDate !== '');
 
-$today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
+$today = (new DateTimeImmutable(
+  'now',
+  new DateTimeZone('Asia/Tokyo')
+))->format('Y-m-d');
+
 $targetDate = $isRecovery ? $argDate : $today;
 
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $targetDate)) {
@@ -89,11 +120,17 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $targetDate)) {
     );
 }
 $todayCompact = str_replace('-', '', $today);
-$uploadCompleteFile = "{$uploadStateDir}/complete_upload_daily_market_snapshot_{$todayCompact}.txt";
+$uploadCompleteFile = "{$uploadStateDir}/complete_upload_daily_market_snapshot_{$todayCompact}_{$mode}.txt";
 
-logMsg("===== parent job start: targetDate={$targetDate}, recovery=" . ($isRecovery ? 'yes' : 'no') . " =====");
-
+logMsg(
+  "===== parent job start: mode={$mode}, targetDate={$targetDate}, recovery=" .
+  ($isRecovery ? 'yes' : 'no') .
+  " ====="
+);
+  
 if (!$isRecovery) {
+  logMsg("check upload complete file: {$uploadCompleteFile}");
+
   $uploadedDate = readTrimmedFile($uploadCompleteFile);
 
   if ($uploadedDate === null) {
@@ -102,74 +139,90 @@ if (!$isRecovery) {
   }
 
   if ($uploadedDate !== $today) {
-    logMsg("upload date mismatch. uploaded={$uploadedDate}, today={$today}. exit.");
+    logMsg(
+      "upload date mismatch. uploaded={$uploadedDate}, today={$today}. exit."
+    );
     exit(0);
   }
+
+  logMsg("upload complete file confirmed: {$uploadCompleteFile}");
 }
 
-if ($isRecovery) {
-  $jobs = [
-    [
-      'daily_market_snapshot.php',
-      ["--date={$targetDate}", '--force']
-    ],
+if ($mode === '000') {
 
-    [
-      'kabuhoyu_sokuhou.php',
-      [$targetDate]
-    ],
-
-    [
-      'tekiji_disclosure.php',
-      [$targetDate]
-    ],
-
-    [
-      'kessan_sokuhou.php',
-      [$targetDate]
-    ],
-
-    [
-      'pts_morning_news.php',
-      [$targetDate, '--force']
-    ],
-    [
-      'index_eod_import_from_saved_html.php',
-      ["--target_date={$targetDate}"]
-    ],
-  ];
+  if ($isRecovery) {
+    $jobs = [
+      [
+        'index_eod_import_from_saved_html.php',
+        ["--target_date={$targetDate}"]
+      ],
+    ];
+  } else {
+    $jobs = [
+      [
+        'index_eod_import_from_saved_html.php',
+        []
+      ],
+    ];
+  }
 
 } else {
-  $jobs = [
-    [
-      'daily_market_snapshot.php',
-      []
-    ],
 
-    [
-      'kabuhoyu_sokuhou.php',
-      []
-    ],
+  if ($isRecovery) {
+    $jobs = [
+      [
+        'daily_market_snapshot.php',
+        ["--date={$targetDate}", '--force']
+      ],
 
-    [
-      'tekiji_disclosure.php',
-      []
-    ],
+      [
+        'kabuhoyu_sokuhou.php',
+        [$targetDate]
+      ],
 
-    [
-      'kessan_sokuhou.php',
-      []
-    ],
+      [
+        'tekiji_disclosure.php',
+        [$targetDate]
+      ],
 
-    [
-      'pts_morning_news.php',
-      []
-    ],
-    [
-      'index_eod_import_from_saved_html.php',
-      []
-    ],
-  ];
+      [
+        'kessan_sokuhou.php',
+        [$targetDate]
+      ],
+
+      [
+        'pts_morning_news.php',
+        [$targetDate, '--force']
+      ],
+    ];
+  } else {
+    $jobs = [
+      [
+        'daily_market_snapshot.php',
+        []
+      ],
+
+      [
+        'kabuhoyu_sokuhou.php',
+        []
+      ],
+
+      [
+        'tekiji_disclosure.php',
+        []
+      ],
+
+      [
+        'kessan_sokuhou.php',
+        []
+      ],
+
+      [
+        'pts_morning_news.php',
+        []
+      ],
+    ];
+  }
 }
 
 try {
@@ -183,11 +236,11 @@ try {
     runChild($scriptPath, $extraArgs);
   }
 
-  logMsg("===== parent job done =====");
+  logMsg("===== parent job done: mode={$mode} =====");
   exit(0);
 
 } catch (Throwable $e) {
   logMsg("ERROR: " . $e->getMessage());
-  logMsg("===== parent job failed =====");
+  logMsg("===== parent job failed: mode={$mode} =====");
   exit(1);
 }

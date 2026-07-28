@@ -28,24 +28,60 @@ function Write-Log {
 Write-Log '[START] daily market snapshot all'
 
 try {
-  Write-Log '[STEP] download start'
+  Write-Log '[STEP 1/4] index scraping start. mode=000'
+ 
+  & powershell.exe `
+    -ExecutionPolicy Bypass `
+    -File $DownloadScript `
+    000 `
+    *>> $LogPath
+ 
+  if ($LASTEXITCODE -ne 0) {
+    throw "index scraping failed. mode=000 exit code=$LASTEXITCODE"
+  }
+ 
+  Write-Log '[STEP 1/4] index scraping finished. mode=000'
+  Write-Log '[STEP 2/4] index upload start. mode=000'
+ 
+  & powershell.exe `
+    -ExecutionPolicy Bypass `
+    -File $UploadScript `
+    000 `
+    $Today `
+    *>> $LogPath
+ 
+  if ($LASTEXITCODE -ne 0) {
+    throw "index upload failed. mode=000 exit code=$LASTEXITCODE"
+   }
+ 
+  Write-Log '[STEP 2/4] index upload finished. mode=000'
+  Write-Log '[STEP 3/4] other scraping start. mode=001'
 
-  & powershell.exe -ExecutionPolicy Bypass -File $DownloadScript *>> $LogPath
+  & powershell.exe `
+    -ExecutionPolicy Bypass `
+    -File $DownloadScript `
+    001 `
+    *>> $LogPath
 
   if ($LASTEXITCODE -ne 0) {
-    throw "download failed. exit code=$LASTEXITCODE"
+    throw "other scraping failed. mode=001 exit code=$LASTEXITCODE"
   }
 
-  Write-Log '[STEP] download finished'
-  Write-Log '[STEP] upload start'
+  Write-Log '[STEP 3/4] other scraping finished. mode=001'
+  Write-Log '[STEP 4/4] other upload start. mode=001'
 
-  & powershell.exe -ExecutionPolicy Bypass -File $UploadScript $Today *>> $LogPath
+  & powershell.exe `
+    -ExecutionPolicy Bypass `
+    -File $UploadScript `
+    001 `
+    $Today `
+    *>> $LogPath
 
   if ($LASTEXITCODE -ne 0) {
-    throw "upload failed. exit code=$LASTEXITCODE"
+    throw "other upload failed. mode=001 exit code=$LASTEXITCODE"
   }
 
-  Write-Log '[STEP] upload finished'
+  Write-Log '[STEP 4/4] other upload finished. mode=001'
   Write-Log '[DONE] all finished'
 
 } catch {
