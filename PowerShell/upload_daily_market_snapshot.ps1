@@ -12,13 +12,13 @@
  #     -> upload 07_ files for today's date
  #
  #   .\upload_daily_market_snapshot.ps1 001
- #     -> upload 01_ through 06_ files for today's date
+ #     -> upload 01_ through 06_ files and 08_ files for today's date
  #
  #   .\upload_daily_market_snapshot.ps1 000 20260615
  #     -> upload 07_ files for specified date
  #
  #   .\upload_daily_market_snapshot.ps1 001 20260615
- #     -> upload 01_ through 06_ files for specified date
+ #     -> upload 01_ through 06_ files and 08_ files for specified date
 
 if ([string]::IsNullOrWhiteSpace($TargetDate)) {
   $TargetDate = Get-Date -Format 'yyyyMMdd'
@@ -53,7 +53,8 @@ if ($Mode -eq '000') {
     '03_*.html',
     '04_*.html',
     '05_*.html',
-    '06_*.html'
+    '06_*.html',
+    '08_*.html'
   )
 }
 
