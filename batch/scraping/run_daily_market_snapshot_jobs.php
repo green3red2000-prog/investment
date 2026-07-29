@@ -24,6 +24,7 @@ declare(strict_types=1);
   *     tekiji_disclosure.php
   *     kessan_sokuhou.php
   *     pts_morning_news.php
+  *     zenmeigara_shikiho.php --mode=check
   *
   *   - 完了マーカーファイルは削除せず、そのまま残す
   *
@@ -41,6 +42,7 @@ declare(strict_types=1);
   *     tekiji_disclosure.php 2026-06-15
   *     kessan_sokuhou.php 2026-06-15
   *     pts_morning_news.php 2026-06-15 --force
+  *     zenmeigara_shikiho.php 2026-06-15 --mode=check
   *   
   *   ※リカバリ起動時は、日付付きの完了マーカーファイルが無くても動作します。
   * ログ：
@@ -194,6 +196,11 @@ if ($mode === '000') {
         'pts_morning_news.php',
         [$targetDate, '--force']
       ],
+
+      [
+        'zenmeigara_shikiho.php',
+        [$targetDate, '--mode=check']
+      ],      	  
     ];
   } else {
     $jobs = [
@@ -221,6 +228,11 @@ if ($mode === '000') {
         'pts_morning_news.php',
         []
       ],
+
+      [
+        'zenmeigara_shikiho.php',
+        ['--mode=check']
+      ],      	  
     ];
   }
 }

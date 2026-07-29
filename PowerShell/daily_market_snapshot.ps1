@@ -244,7 +244,11 @@ $Items = @(
   @{ Url = 'https://kabutan.jp/stock/kabuka?code=0018&ashi=day'; File = '07_index_0018_market_price.html'; Check = 0 },
   @{ Url = 'https://kabutan.jp/stock/kabuka?code=0019&ashi=day'; File = '07_index_0019_market_price.html'; Check = 0 },
   @{ Url = 'https://kabutan.jp/stock/kabuka?code=0020&ashi=day'; File = '07_index_0020_market_price.html'; Check = 0 },
-  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0105&ashi=day'; File = '07_index_0105_market_price.html'; Check = 0 }
+  @{ Url = 'https://kabutan.jp/stock/kabuka?code=0105&ashi=day'; File = '07_index_0105_market_price.html'; Check = 0 },
+  
+  @{ Url = 'https://shikiho.toyokeizai.net/stocks/7203'; File = '08_shikiho_7203_market_price.html'; Check = 0 },
+  @{ Url = 'https://shikiho.toyokeizai.net/stocks/6758'; File = '08_shikiho_6758_market_price.html'; Check = 0 },
+  @{ Url = 'https://shikiho.toyokeizai.net/stocks/9432'; File = '08_shikiho_9432_market_price.html'; Check = 0 }
 )
 
 Write-Host "[DEBUG] script path = $PSCommandPath"
@@ -253,7 +257,8 @@ Write-Host "[DEBUG] TestCheck = $TestCheck"
 
 # Filter scraping targets based on the execution mode.
 # 000: Index daily price files only (07_)
-# 001: All files except index daily price files (01_ through 06_)
+# 001: Daily market snapshot files and Shikiho monitoring files
+#      (01_ through 06_, and 08_)
 if ($Mode -eq '000') {
   $Items = @(
     $Items | Where-Object {
@@ -263,7 +268,8 @@ if ($Mode -eq '000') {
 } else {
   $Items = @(
     $Items | Where-Object {
-      $_.File -match '^0[1-6]_'
+      $_.File -match '^0[1-6]_' -or
+      $_.File -like '08_*'
     }
   )
 }
