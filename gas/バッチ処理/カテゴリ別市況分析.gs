@@ -12,6 +12,7 @@ const FOLDER_OUTPUT = ['投資','プログラミング','GAS','スクレイピ�
 const OUT_SHEET_NAME = 'カテゴリ別市況分析_最新';
 const CALENDAR_MASTER_NAME = 'カレンダーマスタ';
 const THEME_MASTER_NAME = '私選テーマ別銘柄マスタ';
+const BASIC_INFO_MASTER_NAME = '全銘柄基本情報マスタ';
 const SRC_PREFIX = '全銘柄日足分析_';
 
 // 通常実行で最後に処理した集計元ファイル名を保存する
@@ -125,7 +126,6 @@ function run_category_market_summary() {
     console.log(`[OK] output sheet opened: ${OUT_SHEET_NAME}`);
 
     const outFile = DriveApp.getFileById(outSs.getId());
-    const srcFile = DriveApp.getFileById(srcPick.id);
     const srcSs = SpreadsheetApp.openById(srcPick.id);
 
     // 集計元データ読み込み
@@ -181,8 +181,7 @@ function run_category_market_summary() {
     // (5) メール送信
     const summary = buildMailSummary_(
       outSs,
-      copiedFile.getUrl(),
-      srcFile
+      copiedFile.getUrl()
     );
 
     MailApp.sendEmail({
@@ -227,7 +226,7 @@ function run_category_market_summary() {
  */
 function run_category_market_summary_recovery() {
 
-  const dateStr = '2026-07-12';
+  const dateStr = '2026-07-29';
 
   console.log('[START] run_category_market_summary_recovery');
 
@@ -251,7 +250,6 @@ function run_category_market_summary_recovery() {
   // ★集計元を dateStr で厳密指定
   const srcPick = findDatedSpreadsheet_(FOLDER_OUTPUT, SRC_PREFIX, ds);
   if (!srcPick) throw new Error(`集計元が見つかりません: ${SRC_PREFIX}${ds}`);
-  const srcFile = DriveApp.getFileById(srcPick.id);
   console.log(`[OK] source picked (recovery): ${SRC_PREFIX}${srcPick.dateStr}`);
 
   const srcSs = SpreadsheetApp.openById(srcPick.id);
@@ -273,7 +271,7 @@ function run_category_market_summary_recovery() {
   console.log('[DONE] sheet copy (recovery)');
 
   // メール（通常と同じ形式で送る）
-  const summary = buildMailSummary_(outSs, copiedFile.getUrl(), srcFile);
+  const summary = buildMailSummary_(outSs, copiedFile.getUrl());
   MailApp.sendEmail({
     to: 'green3red2000@gmail.com',
     subject: copiedName,
@@ -1469,6 +1467,103 @@ function loadThemeMaster_() {
   return { categories, codesByCategory };
 }
 
+/** ====== メール用：指数情報読み込み ====== */
+function loadIndexMarketRows_() {
+  const ss = openSpreadsheetInFolder_(
+    FOLDER_MASTER,
+    BASIC_INFO_MASTER_NAME
+  );
+
+  if (!ss) {
+    throw new Error(
+      `全銘柄基本情報マスタが見つかりません: ${BASIC_INFO_MASTER_NAME}`
+    );
+  }
+
+  const sh = ss.getSheets()[0];
+  const values = sh.getDataRange().getValues();
+  const displayValues = sh.getDataRange().getDisplayValues();
+
+  if (values.length < 2) {
+    return [];
+  }
+
+  const headers = values[0].map(v => String(v ?? '').trim());
+
+  const requiredHeaders = [
+    '証券コード',
+    '会社名',
+    '上場区分',
+    '終値',
+    '前日比',
+    '騰落率',
+    '出来高',
+  ];
+
+  const indexes = {};
+
+  for (const header of requiredHeaders) {
+    const index = headers.indexOf(header);
+
+    if (index < 0) {
+      throw new Error(
+        `全銘柄基本情報マスタに「${header}」列がありません`
+      );
+    }
+
+    indexes[header] = index;
+  }
+
+  const rows = [];
+
+  for (let r = 1; r < values.length; r++) {
+    const listingCategory = String(
+      values[r][indexes['上場区分']] ?? ''
+    ).trim();
+
+    if (listingCategory !== '指数') {
+      continue;
+    }
+
+    rows.push({
+      code: formatIndexCode_(
+        values[r][indexes['証券コード']]
+      ),
+
+      name: String(
+        displayValues[r][indexes['会社名']] ?? ''
+      ).trim(),
+
+      close: String(
+        displayValues[r][indexes['終値']] ?? ''
+      ).trim(),
+
+      previousChange: String(
+        displayValues[r][indexes['前日比']] ?? ''
+      ).trim(),
+
+      changeRate: String(
+        displayValues[r][indexes['騰落率']] ?? ''
+      ).trim(),
+
+      volume: values[r][indexes['出来高']],
+    });
+  }
+
+  return rows;
+}
+
+/** 指数の証券コードを4桁の左ゼロ埋めにする */
+function formatIndexCode_(value) {
+  const code = String(value ?? '').trim();
+
+  if (!code) {
+    return 'ー';
+  }
+
+  return code.padStart(4, '0');
+}
+
 function syncThemeCategories_(sheet, categories) {
   if (!categories || categories.length === 0) return;
 
@@ -1717,10 +1812,17 @@ function applyDashRightAlign_(range) {
  * (5) メール本文を作る（概要＋コピーURL）
  * - 概要は仕様どおり「カテゴリ別市況分析_最新」から取得
  */
-function buildMailSummary_(outSs, copiedUrl, srcName) {
+function buildMailSummary_(outSs, copiedUrl) {
   const zen = outSs.getSheetByName('全銘柄');
   const theme = outSs.getSheetByName('私選テーマ別');
-  if (!zen || !theme) throw new Error('シートが見つかりません（全銘柄/私選テーマ別）');
+
+  if (!zen || !theme) {
+    throw new Error(
+      'シートが見つかりません（全銘柄/私選テーマ別）'
+    );
+  }
+
+  const indexRows = loadIndexMarketRows_();
 
   // 0列の実体（集計値/割合）を特定（既存の ensureZeroColumnReady_ の探索ロジックを流用せず、読取専用で探す）
   const zenCols = detectTableCols_(zen);     // { agg0Col, pct0Col, diffColByAgg0? }
@@ -1733,7 +1835,32 @@ function buildMailSummary_(outSs, copiedUrl, srcName) {
 
   // ---- 本文組み立て ----
   const lines = [];
+
   lines.push('本日のカテゴリ別市況分析を終了しました。');
+  lines.push('');
+  lines.push('概要は以下になります。');
+  lines.push('');
+
+  // ===== 指数部 =====
+  lines.push('証券コード、指数名、終値(円)、前日比(円)、騰落率(％)、出来高');
+
+  for (const row of indexRows) {
+    lines.push([
+    row.code,
+    row.name,
+    row.close || 'ー',
+    row.previousChange || 'ー',
+    row.changeRate || 'ー',
+    formatJPNumber_(
+      row.volume,
+      '壱',
+      '万',
+      0,
+      '株'
+      ) || 'ー',
+    ].join('、'));
+  }
+
   lines.push('');
   lines.push('【全銘柄 / 合計値（集計値 0）】');
 
