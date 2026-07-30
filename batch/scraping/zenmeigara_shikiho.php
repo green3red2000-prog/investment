@@ -12,9 +12,9 @@
   *
   *     ・--mode=check
   *         四季報情報の更新有無を監視する
-  *         前回取得したCSVと今回取得したCSVを比較する
+  *         HTMLから取得した四季報情報と、Google Drive上の全銘柄基本情報マスタを比較する
   *         --noupload指定がない場合はCSV/TXTをDriveへアップロードする
-  *         比較処理が正常終了した場合のみ、今回のCSVを前回取得内容として保存する
+  *         全銘柄基本情報マスタへの書き込みは行わない
   *
   * - HTML保存先
   *     /opt/invest/scraping/data/YYYYMMDD
@@ -35,8 +35,8 @@
   *     ・--mode=checkの場合、出力ファイル名のプレフィックスを
   *       「四季報情報更新監視」とする
   *
-  * - 更新監視用CSV
-  *     /opt/invest/scraping/state/shikiho_check_last.csv
+  * - 更新監視の比較元
+  *     Google Drive「投資」＞「プログラミング」＞「GAS」＞「マスタ」＞「全銘柄基本情報マスタ」
   *
   * - アップロード
   *     ・--noupload指定がない場合は、modeに関係なくDriveへアップロード後にCSV/TXTを削除する
@@ -75,9 +75,29 @@ date_default_timezone_set('Asia/Tokyo');
 
 $DATA_BASE_DIR = '/opt/invest/scraping/data';
 $TMP_DIR = '/opt/invest/scraping/tmp';
-$STATE_DIR = '/opt/invest/scraping/state';
 
-$SHIKIHO_CHECK_STATE_PATH = rtrim($STATE_DIR, '/') . '/shikiho_check_last.csv';
+// Google Drive上のマスタ配置
+const MASTER_FOLDER_PATH = array(
+  '投資',
+  'プログラミング',
+  'GAS',
+  'マスタ',
+);
+
+const BASIC_INFO_MASTER_NAME = '全銘柄基本情報マスタ';
+
+/**
+ * 整数値として比較する四季報項目
+ */
+const SHIKIHO_INTEGER_COMPARE_HEADERS = array(
+  '四季報スコア',
+  '成長性',
+  '収益性',
+  '安全性',
+  '規模',
+  '割安度',
+  '値上がり',
+);
 
 // ===== 実行引数 =====
 $args = array_slice($argv, 1);
@@ -389,89 +409,295 @@ function csv_rows_to_code_map_($rows) {
   );
 }
 
-
 /**
- * CSVの更新内容をテキスト出力用の配列として作成する
+ * Google Drive上の全銘柄基本情報マスタを読み込む
  *
- * 「四季報更新日」は実行ごとに変わるため比較対象外とする。
+ * scraping_common.phpのbuild_oauth_client_()で
+ * Google APIクライアントを生成する。
+ *
+ * マスタは読み込みのみとし、書き込みは行わない。
  */
-function build_csv_update_lines_($currentRows, $previousRows) {
-  $current = csv_rows_to_code_map_($currentRows);
-
-  if ($previousRows === null) {
-    $previous = array(
-      'headers' => $current['headers'],
-      'rows' => array(),
+function load_basic_info_master_rows_() {
+  if (!function_exists('build_oauth_client_')) {
+    throw new RuntimeException(
+      'build_oauth_client_()が見つかりません。' .
+      'scraping_common.phpを確認してください。'
     );
-  } else {
-    $previous = csv_rows_to_code_map_($previousRows);
   }
+
+  $client = build_oauth_client_();
+
+  $drive =
+    new Google\Service\Drive($client);
+
+  $sheets =
+    new Google\Service\Sheets($client);
+
+  $folderId =
+    resolve_folder_id_by_path_(
+      $drive,
+      MASTER_FOLDER_PATH
+    );
+
+  $fileId =
+    find_shikiho_master_spreadsheet_id_(
+      $drive,
+      $folderId,
+      BASIC_INFO_MASTER_NAME
+    );
+
+  if ($fileId === null) {
+    throw new RuntimeException(
+      'マスタスプレッドシートが見つかりません: ' .
+      BASIC_INFO_MASTER_NAME
+    );
+  }
+
+  $spreadsheet =
+    $sheets->spreadsheets->get($fileId);
+
+  $sheet0 =
+    isset($spreadsheet->getSheets()[0])
+      ? $spreadsheet->getSheets()[0]
+      : null;
+
+  if ($sheet0 === null) {
+    throw new RuntimeException(
+      'マスタのシート取得に失敗: ' .
+      BASIC_INFO_MASTER_NAME
+    );
+  }
+
+  $sheetTitle =
+    $sheet0->getProperties()->getTitle();
+
+  // シート名にシングルクォートが含まれる場合に備える
+  $escapedSheetTitle =
+    str_replace("'", "''", $sheetTitle);
+
+  $response =
+    $sheets->spreadsheets_values->get(
+      $fileId,
+      "'{$escapedSheetTitle}'!A:ZZ"
+    );
+
+  $values = $response->getValues();
+
+  if (!is_array($values) || count($values) === 0) {
+    throw new RuntimeException(
+      '全銘柄基本情報マスタにデータがありません。'
+    );
+  }
+
+  return $values;
+}
+/**
+ * 指定したGoogle Driveフォルダ直下から、
+ * 名前が一致するGoogleスプレッドシートのIDを取得する
+ */
+function find_shikiho_master_spreadsheet_id_(
+  Google\Service\Drive $drive,
+  $folderId,
+  $fileName
+) {
+  $query = sprintf(
+    "name = '%s' " .
+    "and '%s' in parents " .
+    "and trashed = false " .
+    "and mimeType = " .
+    "'application/vnd.google-apps.spreadsheet'",
+    str_replace("'", "\\'", (string)$fileName),
+    (string)$folderId
+  );
+
+  $response =
+    $drive->files->listFiles(array(
+      'q' => $query,
+      'fields' => 'files(id,name)',
+      'pageSize' => 10,
+    ));
+
+  $files = $response->getFiles();
+
+  if (!$files || count($files) === 0) {
+    return null;
+  }
+
+  return $files[0]->getId();
+}
+/**
+ * 比較用に値を正規化する
+ *
+ * 四季報スコア等は、3、3.0、03.00を同じ整数値として扱う。
+ * 空欄や数値でない値は、通常の文字列として扱う。
+ */
+function normalize_compare_value_($header, $value) {
+  $value = norm_ws($value);
+
+  if (
+    in_array(
+      (string)$header,
+      SHIKIHO_INTEGER_COMPARE_HEADERS,
+      true
+    ) &&
+    $value !== '' &&
+    is_numeric($value)
+  ) {
+    return (string)((int)((float)$value));
+  }
+
+  return $value;
+}
+/**
+ * HTML取得結果と全銘柄基本情報マスタを比較し、
+ * テキスト出力用の更新内容を作成する
+ *
+ * 今回HTMLから取得した証券コードだけを比較対象とする。
+ * 全銘柄基本情報マスタにのみ存在する証券コードは
+ * 比較対象としない。
+ */
+function build_master_update_lines_(
+  $currentRows,
+  $masterRows
+) {
+  $current =
+    csv_rows_to_code_map_($currentRows);
+
+  $master =
+    csv_rows_to_code_map_($masterRows);
 
   $ignoreHeaders = array(
     '証券コード',
     '四季報更新日',
+    '実行結果',
   );
 
-  $allCodes = array_unique(
-    array_merge(
-      array_keys($current['rows']),
-      array_keys($previous['rows'])
-    )
-  );
+  // マスタに必要な見出しが存在することを確認する
+  $masterHeaderMap = array();
 
-  sort($allCodes, SORT_STRING);
+  foreach ($master['headers'] as $header) {
+    $header = trim((string)$header);
+
+    if ($header !== '') {
+      $masterHeaderMap[$header] = true;
+    }
+  }
+
+  foreach ($current['headers'] as $header) {
+    $header = trim((string)$header);
+
+    if (
+      $header === '' ||
+      in_array($header, $ignoreHeaders, true)
+    ) {
+      continue;
+    }
+
+    if (!isset($masterHeaderMap[$header])) {
+      throw new RuntimeException(
+        '全銘柄基本情報マスタに比較対象列がありません: ' .
+        $header
+      );
+    }
+  }
+
+  /*
+   * 全銘柄基本情報マスタの全証券コードではなく、
+   * 今回HTMLから取得した証券コードだけを比較する。
+   */
+  $currentCodes =
+    array_keys($current['rows']);
+
+  sort($currentCodes, SORT_STRING);
 
   $changeLines = array();
 
-  foreach ($allCodes as $code) {
-    $hasCurrent = isset($current['rows'][$code]);
-    $hasPrevious = isset($previous['rows'][$code]);
+  foreach ($currentCodes as $code) {
+    $currentRow =
+      $current['rows'][$code];
 
-    // 今回新たに追加された銘柄
-    if ($hasCurrent && !$hasPrevious) {
-      $changeLines[] = $code;
-      $changeLines[] = "　新規追加";
-      $changeLines[] = "";
+    // HTMLの読み込みまたは解析に失敗した銘柄は、
+    // 空欄を変更値として誤通知しないよう比較対象外とする
+    $result =
+      isset($currentRow['実行結果'])
+        ? trim((string)$currentRow['実行結果'])
+        : '';
+
+    if ($result !== '正常') {
       continue;
     }
 
-    // 今回のCSVから消えた銘柄
-    if (!$hasCurrent && $hasPrevious) {
+    /*
+     * 今回HTMLには存在するが、
+     * 全銘柄基本情報マスタに存在しない場合。
+     */
+    if (!isset($master['rows'][$code])) {
       $changeLines[] = $code;
-      $changeLines[] = "　削除";
-      $changeLines[] = "";
+      $changeLines[] =
+        '　全銘柄基本情報マスタに証券コードが存在しません。';
+      $changeLines[] = '';
       continue;
     }
+
+    $masterRow =
+      $master['rows'][$code];
 
     $codeLines = array();
 
     foreach ($current['headers'] as $header) {
-      $header = (string)$header;
+      $header = trim((string)$header);
 
-      if (in_array($header, $ignoreHeaders, true)) {
+      if (
+        $header === '' ||
+        in_array($header, $ignoreHeaders, true)
+      ) {
         continue;
       }
 
-      $oldValue = isset($previous['rows'][$code][$header])
-        ? (string)$previous['rows'][$code][$header]
-        : '';
+      $oldValue =
+        normalize_compare_value_(
+          $header,
+          isset($masterRow[$header])
+            ? $masterRow[$header]
+            : ''
+        );
 
-      $newValue = isset($current['rows'][$code][$header])
-        ? (string)$current['rows'][$code][$header]
-        : '';
+
+      $newValue =
+        normalize_compare_value_(
+          $header,
+          isset($currentRow[$header])
+            ? $currentRow[$header]
+            : ''
+        );
 
       if ($oldValue === $newValue) {
         continue;
       }
 
-      $oldDisplay = ($oldValue === '') ? '（空欄）' : $oldValue;
-      $newDisplay = ($newValue === '') ? '（空欄）' : $newValue;
+      $oldDisplay =
+        ($oldValue === '')
+          ? '（空欄）'
+          : $oldValue;
 
-      $codeLines[] = "　{$header}";
-      $codeLines[] = "　　{$oldDisplay}";
-      $codeLines[] = "　　　↓";
-      $codeLines[] = "　　{$newDisplay}";
-      $codeLines[] = "";
+      $newDisplay =
+        ($newValue === '')
+          ? '（空欄）'
+          : $newValue;
+
+      $codeLines[] =
+        "　{$header}";
+
+      $codeLines[] =
+        "　　{$oldDisplay}";
+
+      $codeLines[] =
+        "　　　↓";
+
+      $codeLines[] =
+        "　　{$newDisplay}";
+
+      $codeLines[] = '';
     }
 
     if (count($codeLines) > 0) {
@@ -505,30 +731,6 @@ function build_csv_update_lines_($currentRows, $previousRows) {
   );
 }
 
-
-/**
- * 更新監視用CSVを一時ファイル経由で安全に保存する
- */
-function save_check_state_csv_($sourcePath, $statePath) {
-  ensure_dir(dirname($statePath));
-
-  $tmpPath =
-    $statePath . '.tmp.' . getmypid();
-
-  if (!copy($sourcePath, $tmpPath)) {
-    throw new RuntimeException(
-      "更新監視用CSVの一時保存に失敗しました: {$tmpPath}"
-    );
-  }
-
-  if (!rename($tmpPath, $statePath)) {
-    @unlink($tmpPath);
-
-    throw new RuntimeException(
-      "更新監視用CSVの更新に失敗しました: {$statePath}"
-    );
-  }
-}
 /**
  * 四季報ページHTMLから必要項目を抽出
  */
@@ -847,19 +1049,20 @@ try {
     // 今回作成したCSVを読み込む
     $currentCsvRows = read_csv_file_($csvPath);
 
-    // 前回CSVが存在する場合のみ読み込む
-    $previousCsvRows = null;
+    // Google Driveから全銘柄基本情報マスタを読み込む
+    $basicInfoMasterRows = load_basic_info_master_rows_();
 
-    if (is_file($SHIKIHO_CHECK_STATE_PATH)) {
-      $previousCsvRows =
-        read_csv_file_($SHIKIHO_CHECK_STATE_PATH);
-    }
+    echo
+      "[MASTER] 全銘柄基本情報マスタを読み込みました。" .
+      " rows=" .
+      count($basicInfoMasterRows) .
+      "\n";
 
     // 比較結果を作成
     $csvUpdateLines =
-      build_csv_update_lines_(
+      build_master_update_lines_(
         $currentCsvRows,
-        $previousCsvRows
+        $basicInfoMasterRows
       );
   }
 
@@ -899,31 +1102,10 @@ try {
     );
   }
   
-  // -------------------------------
-  // (8) 更新監視用CSV保存
-  // -------------------------------
-  if ($mode === 'check') {
-    if ($errCount === 0) {
-      // CSV比較およびTXT出力が正常終了した場合のみ更新する
-      save_check_state_csv_(
-        $csvPath,
-        $SHIKIHO_CHECK_STATE_PATH
-      );
-
-      echo "[STATE] 更新監視用CSVを保存しました: "
-        . "{$SHIKIHO_CHECK_STATE_PATH}\n";
-
-    } else {
-      echo "[STATE] 読み込みエラーがあるため、"
-        . "更新監視用CSVの保存をスキップしました。"
-        . " err={$errCount}\n";
-    }
-  }
-
   echo "ローカル出力完了:\n- {$csvPath}\n- {$txtPath}\n";
 
   // -------------------------------
-  // (9) Driveアップロード → ローカル削除
+  // (8) Driveアップロード → ローカル削除
   // -------------------------------
   if ($noUpload) {
     echo "[NOUPLOAD] Driveアップロードをスキップしました。\n";
