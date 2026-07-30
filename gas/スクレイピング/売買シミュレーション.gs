@@ -1,5 +1,5 @@
 /**
- * 売買シミュレーション：行ごと順次処理（全シート対象）
+ * 売買シミュレーション：シート一括入出力・行ごと順次処理（全シート対象）
  * - マイドライブ > 投資 > 売買シミュレーション
  * - 1–2行目: ユーザー定義＆サマリ領域
  * - 3行目: 見出し
@@ -24,7 +24,7 @@ function runSimulation() {
  * 例）建て日/決済値の確定ウィンドウ（23:30–23:59）を再現したい時に使う
  */
 function runSimulation_TEST() {
-  runSimulation_('2026-04-02', '23:45');
+  runSimulation_('2026-07-29', '23:45');
 }
 
 function runSimulation_(processDateISO /* optional: 'yyyy-MM-dd' */,
@@ -127,13 +127,19 @@ function processSheet_(
   basicInfoMap,
   debugStats
 ) {
-
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
+
   if (lastRow < 4 || lastCol < 1) return;
 
-  // ヘッダー取得 & マッピング（3行目が見出し）
-  const header = sheet.getRange(3, 1, 1, lastCol).getValues()[0].map(v => String(v).trim());
+  const DATA_START = 4;
+
+  // 3行目の見出しを一括取得
+  const header = sheet
+    .getRange(3, 1, 1, lastCol)
+    .getValues()[0]
+    .map(v => String(v).trim());
+
   const col = colIndexMap_(header, [
     '証券コード','会社名','売買','動機・着想','株数',
     '株探','四季','銘偵','全銘',
@@ -144,287 +150,678 @@ function processSheet_(
     '停止','評価・備考',
     'PER','PBR','利回り','信用倍率','特色','連結事業'
   ]);
+
   if (col['証券コード'] === undefined) return;
 
-  const DATA_START = 4; // 4行目から処理
-  let rowsCount = 0;    // サマリ対象範囲の行数（4行目から空行直前まで）
+  // 4行目以降を一括取得
+  const readRowCount = lastRow - DATA_START + 1;
+  const dataRange = sheet.getRange(
+    DATA_START,
+    1,
+    readRowCount,
+    lastCol
+  );
 
-  // ★ 決済値/建て日/日付処理の確定タイミングを 23:30–23:59 に統一
-  const isExecWindow = isInRange_(minutes, 23, 30, 23, 59);
+  const values = dataRange.getValues();
+  const formulas = dataRange.getFormulas();
 
-  for (let r = DATA_START; r <= lastRow; r++) {
-    const codeRaw = sheet.getRange(r, col['証券コード']).getValue();
-    const code = normalizeCode_(codeRaw);
-    if (!code) break; // 空行で終了
+  let rowsCount = 0;
+
+  // 決済値・建て日・日付処理の確定時間
+  const isExecWindow = isInRange_(
+    minutes,
+    23,
+    30,
+    23,
+    59
+  );
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const formulaRow = formulas[i];
+
+    const code = normalizeCode_(
+      getRowValue_(row, col, '証券コード')
+    );
+
+    // 証券コードが空白の行で明細終了
+    if (!code) break;
+
     rowsCount++;
     debugStats.rowsScanned += 1;
 
-    // (1) 停止=「〇」ならスキップ
+    /*
+     * (1) 停止チェック
+     */
     if (col['停止'] !== undefined) {
-      const stopFlag = String(sheet.getRange(r, col['停止']).getValue() || '').trim();
+      const stopFlag = String(
+        getRowValue_(row, col, '停止') || ''
+      ).trim();
+
       if (stopFlag === '〇') {
         debugStats.skipStopped += 1;
         continue;
       }
     }
 
-    // (2) 参考項目の書き込み
-    writeReferenceItems_(sheet, r, col, code, basicInfoMap);
+    /*
+     * (2) 参考項目
+     */
+    writeReferenceItemsToRow_(
+      row,
+      formulaRow,
+      col,
+      code,
+      basicInfoMap
+    );
 
-
-    /* =========================================================
+    /*
      * (3) 決済値
-     *  - 「〇」 → 時刻帯で「始値/終値」をセット（15:30–23:59は何もしない）
-     *  - 「始値/終値」 → 23:30–23:59 のみマスタ参照して数値を書き込み、損益計算
-     * ========================================================= */
+     */
     if (col['決済値'] !== undefined) {
-      const cell = sheet.getRange(r, col['決済値']);
-      const v = String(cell.getValue() || '').trim();
+      const settlementValue = String(
+        getRowValue_(row, col, '決済値') || ''
+      ).trim();
 
-      if (v === '〇') {
+      if (settlementValue === '〇') {
         if (isInRange_(minutes, 0, 0, 8, 59)) {
-          cell.setValue('始値');
+          setRowValue_(row, col, '決済値', '始値');
+
         } else if (isInRange_(minutes, 9, 0, 15, 29)) {
-          cell.setValue('終値');
+          setRowValue_(row, col, '決済値', '終値');
+
         } else {
-          // 15:30–23:59 は何もしない
+          // 15:30～23:59は何もしない
         }
-      } else if (v === '始値') {
+
+      } else if (settlementValue === '始値') {
         if (isExecWindow) {
-          const px = getMasterTodayPrice_(masterMap, code, 'open');
+          const px = getMasterTodayPrice_(
+            masterMap,
+            code,
+            'open'
+          );
+
           if (px != null) {
-            cell.setValue(px);
-            if (col['経過日数'] !== undefined && col['決済日数'] !== undefined) {
-              sheet.getRange(r, col['決済日数']).setValue(sheet.getRange(r, col['経過日数']).getValue());
+            setRowValue_(row, col, '決済値', px);
+
+            if (
+              col['経過日数'] !== undefined &&
+              col['決済日数'] !== undefined
+            ) {
+              setRowValue_(
+                row,
+                col,
+                '決済日数',
+                getRowValue_(row, col, '経過日数')
+              );
             }
-            writePnLToBothIfPossible_(sheet, r, col, px);
-          }else {
+
+            writePnLToBothRow_(
+              row,
+              col,
+              px
+            );
+
+          } else {
             debugStats.missMasterOpen += 1;
           }
         }
-      } else if (v === '終値') {
+
+      } else if (settlementValue === '終値') {
         if (isExecWindow) {
-          const px = getMasterTodayPrice_(masterMap, code, 'close');
+          const px = getMasterTodayPrice_(
+            masterMap,
+            code,
+            'close'
+          );
+
           if (px != null) {
-            cell.setValue(px);
-            if (col['経過日数'] !== undefined && col['決済日数'] !== undefined) {
-              sheet.getRange(r, col['決済日数']).setValue(sheet.getRange(r, col['経過日数']).getValue());
+            setRowValue_(row, col, '決済値', px);
+
+            if (
+              col['経過日数'] !== undefined &&
+              col['決済日数'] !== undefined
+            ) {
+              setRowValue_(
+                row,
+                col,
+                '決済日数',
+                getRowValue_(row, col, '経過日数')
+              );
             }
-            writePnLToBothIfPossible_(sheet, r, col, px);
-          }else {
+
+            writePnLToBothRow_(
+              row,
+              col,
+              px
+            );
+
+          } else {
             debugStats.missMasterClose += 1;
           }
         }
       }
     }
 
-    /* =========================================================
+    /*
      * (4) 建て日
-     *  - 空白 → 時刻帯で「始値/終値」をセット
-     *  - 「始値/終値」 → 23:30–23:59 のみマスタ参照して建値を書き、建て日を日付へ
-     *     ※日付を書いたら、同じ行内で「日付の場合」処理に遷移する（★）
-     *  - 日付 → 23:30–23:59 のみ 経過日数等を更新（★）
-     * ========================================================= */
+     */
     if (col['建て日'] !== undefined) {
-      const buildDateRange = sheet.getRange(r, col['建て日']);
-      let buildDateCell = buildDateRange.getValue();
-      let buildDateStr = (typeof buildDateCell === 'string') ? buildDateCell.trim() : buildDateCell;
+      let buildDateCell = getRowValue_(
+        row,
+        col,
+        '建て日'
+      );
 
-      const buildDateIsEmpty = (buildDateStr === '' || buildDateStr === null);
+      let buildDateStr =
+        typeof buildDateCell === 'string'
+          ? buildDateCell.trim()
+          : buildDateCell;
 
+      const buildDateIsEmpty =
+        buildDateStr === '' ||
+        buildDateStr === null ||
+        buildDateStr === undefined;
+
+      /*
+       * 建て日が空白
+       */
       if (buildDateIsEmpty) {
         debugStats.buildDateBlank += 1;
-        // 空白 -> 時刻帯で「始値/終値」を書き出す
-        if (isInRange_(minutes, 0, 0, 8, 59) || isInRange_(minutes, 15, 30, 23, 59)) {
-          buildDateRange.setValue('始値');
-        } else if (isInRange_(minutes, 9, 0, 15, 29)) {
-          buildDateRange.setValue('終値');
-        }
-        // 空白処理の時点では、当日値取得はしない
-      } else {
-        // 「始値」「終値」の場合：23:30–23:59 のみ建値確定→建て日を日付に
-        if (buildDateStr === '始値') {
-          debugStats.buildDateNotFixed += 1; // ★ 建て日未確定（始値/終値のまま）
-          if (isExecWindow) {
-            const px = getMasterTodayPrice_(masterMap, code, 'open');
-            if (px != null && col['建値'] !== undefined) {
-              sheet.getRange(r, col['建値']).setValue(px);
-              // ★ 「現在日」ではなく「処理日」を書く
-              buildDateRange.setValue(procDateObj);
-              // ★ 日付を書いたので、この行内で「日付の場合」処理へ遷移させる
-              buildDateCell = buildDateRange.getValue();
-              buildDateStr = buildDateCell;
-            } else {
-              if (px == null) debugStats.missMasterOpen += 1;
-              if (col['建値'] === undefined) debugStats.missBuildPriceCol += 1;
-              // 取れないなら、日付にも変えない
-              continue;
-            }
-          } else {
-            // 0:00–23:29 は何もしない
-            continue;
-          }
-        } else if (buildDateStr === '終値') {
-          debugStats.buildDateNotFixed += 1; // ★ 建て日未確定（始値/終値のまま）
-          if (isExecWindow) {
-            const px = getMasterTodayPrice_(masterMap, code, 'close');
-            if (px != null && col['建値'] !== undefined) {
-              sheet.getRange(r, col['建値']).setValue(px);
-              // ★ 「現在日」ではなく「処理日」を書く
-              buildDateRange.setValue(procDateObj);
-              // ★ 日付を書いたので、この行内で「日付の場合」処理へ遷移させる
-              buildDateCell = buildDateRange.getValue();
-              buildDateStr = buildDateCell;
-            } else {
-              if (px == null) debugStats.missMasterClose += 1;
-              if (col['建値'] === undefined) debugStats.missBuildPriceCol += 1;
-              continue;
-            }
-          } else {
-            // 0:00–23:29 は何もしない
-            continue;
-          }
+
+        if (
+          isInRange_(minutes, 0, 0, 8, 59) ||
+          isInRange_(minutes, 15, 30, 23, 59)
+        ) {
+          setRowValue_(
+            row,
+            col,
+            '建て日',
+            '始値'
+          );
+
+        } else if (
+          isInRange_(minutes, 9, 0, 15, 29)
+        ) {
+          setRowValue_(
+            row,
+            col,
+            '建て日',
+            '終値'
+          );
         }
 
-        // 日付の場合：23:30–23:59 のみ更新
-        const isDateValue = (buildDateCell instanceof Date) || looksLikeDateString_(buildDateStr);
-        if (isDateValue) {
-          if (!isExecWindow) {
-            // ★ 0:00–23:29 は何もしない
-            continue;
+        // 空白だった回では建値確定をしない
+        continue;
+      }
+
+      /*
+       * 建て日が「始値」
+       */
+      if (buildDateStr === '始値') {
+        debugStats.buildDateNotFixed += 1;
+
+        if (!isExecWindow) {
+          continue;
+        }
+
+        const px = getMasterTodayPrice_(
+          masterMap,
+          code,
+          'open'
+        );
+
+        if (
+          px == null ||
+          col['建値'] === undefined
+        ) {
+          if (px == null) {
+            debugStats.missMasterOpen += 1;
           }
 
-          const buildDate = (buildDateCell instanceof Date) ? buildDateCell : parseDateLoose_(buildDateStr, TZ);
-          // ★ 経過日数は「処理日」を基準にする
-          const elapsed = diffDays_(stripTime_(buildDate, TZ), stripTime_(procDateObj, TZ));
-
-          const currentElapsed = (col['経過日数'] !== undefined)
-            ? toNumberOrNull_(sheet.getRange(r, col['経過日数']).getValue())
-            : null;
-
-          if (col['経過日数'] !== undefined && elapsed !== currentElapsed) {
-            // ★ 先にマスタ（終値）を取得し、正常時のみ以下を実行
-            const endPrice = getMasterTodayPrice_(masterMap, code, 'close');
-            if (endPrice != null) {
-              // ＋列更新（+10 は 8～10 上書き）
-              writePlusColumns_(sheet, r, col, elapsed, endPrice);
-
-              // 騰落率 = (取得値 / 建値 - 1) * 100、小数第2位切り捨て
-              if (col['騰落率'] !== undefined && col['建値'] !== undefined) {
-                const cost = toNumberOrNull_(sheet.getRange(r, col['建値']).getValue());
-                if (cost != null && cost !== 0) {
-                  const raw = ((endPrice / cost) - 1) * 100;
-                  const floored2 = Math.floor(raw * 100) / 100;
-                  sheet.getRange(r, col['騰落率']).setValue(floored2);
-                }
-              }
-
-              // 損益更新（確定損益は決済処理時に更新）
-              writePnLIfPossible_(sheet, r, col, endPrice);
-
-              // メール用に保持
-              processedForMail.push({ code, days: elapsed, price: endPrice });
-
-              // ★ 正常に取れた時だけ「経過日数」を書き込む
-              sheet.getRange(r, col['経過日数']).setValue(elapsed);
-              debugStats.updatedElapsed += 1;
-            }else {
-              debugStats.missMasterClose += 1;
-            }
-          }else {
-            // ★ 「変化なし」ではなく分かる文言にする
-            debugStats.elapsedAlreadyUpToDate += 1; // 経過日数更新なし
+          if (col['建値'] === undefined) {
+            debugStats.missBuildPriceCol += 1;
           }
-        }else {
-          // 日付でも始値/終値でもない（想定外文字列など）
-          debugStats.buildDateInvalid += 1;
+
+          continue;
+        }
+
+        setRowValue_(
+          row,
+          col,
+          '建値',
+          px
+        );
+
+        setRowValue_(
+          row,
+          col,
+          '建て日',
+          procDateObj
+        );
+
+        // 同じ行内で日付処理へ進む
+        buildDateCell = procDateObj;
+        buildDateStr = procDateObj;
+      }
+
+      /*
+       * 建て日が「終値」
+       */
+      else if (buildDateStr === '終値') {
+        debugStats.buildDateNotFixed += 1;
+
+        if (!isExecWindow) {
+          continue;
+        }
+
+        const px = getMasterTodayPrice_(
+          masterMap,
+          code,
+          'close'
+        );
+
+        if (
+          px == null ||
+          col['建値'] === undefined
+        ) {
+          if (px == null) {
+            debugStats.missMasterClose += 1;
+          }
+
+          if (col['建値'] === undefined) {
+            debugStats.missBuildPriceCol += 1;
+          }
+
+          continue;
+        }
+
+        setRowValue_(
+          row,
+          col,
+          '建値',
+          px
+        );
+
+        setRowValue_(
+          row,
+          col,
+          '建て日',
+          procDateObj
+        );
+
+        // 同じ行内で日付処理へ進む
+        buildDateCell = procDateObj;
+        buildDateStr = procDateObj;
+      }
+
+      /*
+       * 建て日が日付
+       */
+      const isDateValue =
+        buildDateCell instanceof Date ||
+        looksLikeDateString_(buildDateStr);
+
+      if (!isDateValue) {
+        debugStats.buildDateInvalid += 1;
+        continue;
+      }
+
+      if (!isExecWindow) {
+        continue;
+      }
+
+      const buildDate =
+        buildDateCell instanceof Date
+          ? buildDateCell
+          : parseDateLoose_(buildDateStr, TZ);
+
+      const elapsed = diffDays_(
+        stripTime_(buildDate, TZ),
+        stripTime_(procDateObj, TZ)
+      );
+
+      const currentElapsed =
+        col['経過日数'] !== undefined
+          ? toNumberOrNull_(
+              getRowValue_(
+                row,
+                col,
+                '経過日数'
+              )
+            )
+          : null;
+
+      if (
+        col['経過日数'] === undefined ||
+        elapsed === currentElapsed
+      ) {
+        debugStats.elapsedAlreadyUpToDate += 1;
+        continue;
+      }
+
+      const endPrice = getMasterTodayPrice_(
+        masterMap,
+        code,
+        'close'
+      );
+
+      if (endPrice == null) {
+        debugStats.missMasterClose += 1;
+        continue;
+      }
+
+      /*
+       * 経過日数別株価
+       */
+      writePlusColumnsToRow_(
+        row,
+        col,
+        elapsed,
+        endPrice
+      );
+
+      /*
+       * 騰落率
+       */
+      if (
+        col['騰落率'] !== undefined &&
+        col['建値'] !== undefined
+      ) {
+        const cost = toNumberOrNull_(
+          getRowValue_(
+            row,
+            col,
+            '建値'
+          )
+        );
+
+        if (cost != null && cost !== 0) {
+          const raw =
+            ((endPrice / cost) - 1) * 100;
+
+          const floored2 =
+            Math.floor(raw * 100) / 100;
+
+          setRowValue_(
+            row,
+            col,
+            '騰落率',
+            floored2
+          );
         }
       }
-    }   
+
+      /*
+       * 損益
+       */
+      writePnLToRow_(
+        row,
+        col,
+        endPrice
+      );
+
+      processedForMail.push({
+        code: code,
+        days: elapsed,
+        price: endPrice
+      });
+
+      /*
+       * 正常に終値を取得できた場合のみ
+       * 経過日数を更新
+       */
+      setRowValue_(
+        row,
+        col,
+        '経過日数',
+        elapsed
+      );
+
+      debugStats.updatedElapsed += 1;
+    }
   }
 
-  // (4) サマリ処理
-  runSummary_(sheet, col, DATA_START, rowsCount);
+  /*
+   * 処理結果を列単位で一括書き込み
+   */
+  writeProcessedColumnsBatch_(
+    sheet,
+    DATA_START,
+    rowsCount,
+    col,
+    values,
+    formulas
+  );
 
-  
+  /*
+   * 処理済み配列からサマリを計算
+   */
+  const summary = calculateSummaryFromRows_(
+    values,
+    rowsCount,
+    col
+  );
+
+  writeSummary_(
+    sheet,
+    summary
+  );
 }
 
-/* ====== サマリ処理 ====== */
-function runSummary_(sheet, col, DATA_START, rowsCount) {
+/**
+ * 処理済みの行配列からサマリを計算する
+ */
+function calculateSummaryFromRows_(
+  values,
+  rowsCount,
+  col
+) {
+  const summary = {
+    confirmedRate: 0,
+    overallRate: 0,
+    sumConfirmedPnL: 0,
+    sumUnrealizedPnL: 0,
+    sumInvestAmount: 0
+  };
+
   if (rowsCount <= 0) {
-    sheet.getRange('L1').setValue(0);
-    sheet.getRange('L2').setValue(0);
-    sheet.getRange('O1').setValue(0);
-    sheet.getRange('O2').setValue(0);
-    sheet.getRange('S1').setValue(0);
-    return;
+    return summary;
   }
-  if (col['損益'] === undefined && col['確定損益'] === undefined) {
-    sheet.getRange('L1').setValue(0);
-    sheet.getRange('L2').setValue(0);
-    sheet.getRange('O1').setValue(0);
-    sheet.getRange('O2').setValue(0);
-    sheet.getRange('S1').setValue(0);
-    return;
+
+  if (
+    col['損益'] === undefined &&
+    col['確定損益'] === undefined
+  ) {
+    return summary;
   }
 
   let cntConfirmedBase = 0;
-  let cntConfirmedWin  = 0;
-  let cntOverallBase   = 0;
-  let cntOverallWin    = 0;
-  let sumConfirmedPnL  = 0;
-  let sumUnrealizedPnL = 0;
-  let sumInvestAmount  = 0;
+  let cntConfirmedWin = 0;
+  let cntOverallBase = 0;
+  let cntOverallWin = 0;
 
   const plusColsRightToLeft = [
-    '＋365','＋180','＋120','＋90','＋45','＋22','＋10','＋7','＋6','＋5','＋4','＋3','＋2','＋1','＋0'
+    '＋365',
+    '＋180',
+    '＋120',
+    '＋90',
+    '＋45',
+    '＋22',
+    '＋10',
+    '＋7',
+    '＋6',
+    '＋5',
+    '＋4',
+    '＋3',
+    '＋2',
+    '＋1',
+    '＋0'
   ];
 
-  const lastRow = sheet.getLastRow();
-  for (let r = DATA_START; r < DATA_START + rowsCount && r <= lastRow; r++) {
-    const confirmed = (col['確定損益'] !== undefined) ? toNumberOrNull_(sheet.getRange(r, col['確定損益']).getValue()) : null;
-    const pnl       = (col['損益']      !== undefined) ? toNumberOrNull_(sheet.getRange(r, col['損益']).getValue())      : null;
+  for (let i = 0; i < rowsCount; i++) {
+    const row = values[i];
 
+    const confirmed =
+      col['確定損益'] !== undefined
+        ? toNumberOrNull_(
+            getRowValue_(
+              row,
+              col,
+              '確定損益'
+            )
+          )
+        : null;
+
+    const pnl =
+      col['損益'] !== undefined
+        ? toNumberOrNull_(
+            getRowValue_(
+              row,
+              col,
+              '損益'
+            )
+          )
+        : null;
+
+    /*
+     * 確定勝率
+     */
     if (confirmed != null) {
       cntConfirmedBase += 1;
-      if (confirmed > 0) cntConfirmedWin += 1;
-      sumConfirmedPnL += confirmed;
+
+      if (confirmed > 0) {
+        cntConfirmedWin += 1;
+      }
+
+      summary.sumConfirmedPnL += confirmed;
     }
 
-    if (confirmed != null || pnl != null) {
+    /*
+     * 全勝率
+     */
+    if (
+      confirmed != null ||
+      pnl != null
+    ) {
       cntOverallBase += 1;
-      const basis = (confirmed != null) ? confirmed : pnl;
-      if (basis != null && basis > 0) cntOverallWin += 1;
+
+      const basis =
+        confirmed != null
+          ? confirmed
+          : pnl;
+
+      if (basis != null && basis > 0) {
+        cntOverallWin += 1;
+      }
     }
 
-    if (confirmed == null && pnl != null) {
-      sumUnrealizedPnL += pnl;
+    /*
+     * 未確定損益
+     */
+    if (
+      confirmed == null &&
+      pnl != null
+    ) {
+      summary.sumUnrealizedPnL += pnl;
     }
 
-    if (confirmed == null && col['株数'] !== undefined) {
-      const qty = toNumberOrNull_(sheet.getRange(r, col['株数']).getValue());
+    /*
+     * 投資金額
+     */
+    if (
+      confirmed == null &&
+      col['株数'] !== undefined
+    ) {
+      const qty = toNumberOrNull_(
+        getRowValue_(
+          row,
+          col,
+          '株数'
+        )
+      );
+
       if (qty != null && qty !== 0) {
         let priceFromPlus = null;
-        for (const name of plusColsRightToLeft) {
-          if (col[name] === undefined) continue;
-          const v = toNumberOrNull_(sheet.getRange(r, col[name]).getValue());
-          if (v != null) { priceFromPlus = v; break; }
+
+        for (
+          let j = 0;
+          j < plusColsRightToLeft.length;
+          j++
+        ) {
+          const name =
+            plusColsRightToLeft[j];
+
+          if (col[name] === undefined) {
+            continue;
+          }
+
+          const value =
+            toNumberOrNull_(
+              getRowValue_(
+                row,
+                col,
+                name
+              )
+            );
+
+          if (value != null) {
+            priceFromPlus = value;
+            break;
+          }
         }
+
         if (priceFromPlus != null) {
-          sumInvestAmount += qty * priceFromPlus;
+          summary.sumInvestAmount +=
+            qty * priceFromPlus;
         }
       }
     }
   }
 
-  const confirmedRate = (cntConfirmedBase > 0) ? Number(((cntConfirmedWin / cntConfirmedBase) * 100).toFixed(1)) : 0;
-  const overallRate   = (cntOverallBase   > 0) ? Number(((cntOverallWin   / cntOverallBase)   * 100).toFixed(1)) : 0;
+  summary.confirmedRate =
+    cntConfirmedBase > 0
+      ? Number(
+          (
+            cntConfirmedWin /
+            cntConfirmedBase *
+            100
+          ).toFixed(1)
+        )
+      : 0;
 
-  sheet.getRange('L1').setValue(confirmedRate);
-  sheet.getRange('L2').setValue(overallRate);
-  sheet.getRange('O1').setValue(sumConfirmedPnL || 0);
-  sheet.getRange('O2').setValue(sumUnrealizedPnL || 0);
-  sheet.getRange('S1').setValue(sumInvestAmount || 0);
+  summary.overallRate =
+    cntOverallBase > 0
+      ? Number(
+          (
+            cntOverallWin /
+            cntOverallBase *
+            100
+          ).toFixed(1)
+        )
+      : 0;
+
+  return summary;
+}
+
+/**
+ * サマリをシートへ書き込む
+ */
+function writeSummary_(sheet, summary) {
+  sheet.getRange('L1:L2').setValues([
+    [summary.confirmedRate],
+    [summary.overallRate]
+  ]);
+
+  sheet.getRange('P1:P2').setValues([
+    [summary.sumConfirmedPnL || 0],
+    [summary.sumUnrealizedPnL || 0]
+  ]);
+
+  sheet.getRange('T1').setValue(
+    summary.sumInvestAmount || 0
+  );
 }
 
 /* ====== 全銘柄日足分析マスタ読み取り ====== */
@@ -616,165 +1013,523 @@ function colIndexMap_(headerRow, names) {
   return map;
 }
 
-function writeReferenceItems_(sheet, r, col, code, basicInfoMap) {
-  const encodedCode = encodeURIComponent(code);
+/**
+ * 行配列から見出し名に対応する値を取得する
+ *
+ * colIndexMap_ はシート列番号と同じ1始まりなので、
+ * 配列参照時は -1 する。
+ */
+function getRowValue_(row, col, columnName) {
+  if (col[columnName] === undefined) {
+    return null;
+  }
 
-  // 株探
+  return row[col[columnName] - 1];
+}
+
+/**
+ * 行配列へ値を設定する
+ */
+function setRowValue_(
+  row,
+  col,
+  columnName,
+  value
+) {
+  if (col[columnName] === undefined) {
+    return;
+  }
+
+  row[col[columnName] - 1] =
+    value === null ||
+    value === undefined
+      ? ''
+      : value;
+}
+
+/**
+ * 参考項目を行配列へ設定する
+ */
+function writeReferenceItemsToRow_(
+  row,
+  formulaRow,
+  col,
+  code,
+  basicInfoMap
+) {
+  const encodedCode =
+    encodeURIComponent(code);
+
+  /*
+   * 株探
+   */
   if (col['株探'] !== undefined) {
-    const url = `https://kabutan.jp/stock/?code=${encodedCode}`;
-    sheet.getRange(r, col['株探']).setFormula(
-      `=HYPERLINK("${url}","株")`
-    );
+    formulaRow[col['株探'] - 1] =
+      `=HYPERLINK("https://kabutan.jp/stock/?code=${encodedCode}","株")`;
   }
 
-  // 四季
+  /*
+   * 四季
+   */
   if (col['四季'] !== undefined) {
-    const url = `https://shikiho.toyokeizai.net/stocks/${encodedCode}`;
-    sheet.getRange(r, col['四季']).setFormula(
-      `=HYPERLINK("${url}","季")`
-    );
+    formulaRow[col['四季'] - 1] =
+      `=HYPERLINK("https://shikiho.toyokeizai.net/stocks/${encodedCode}","季")`;
   }
 
-  // 銘偵
+  /*
+   * 銘偵
+   */
   if (col['銘偵'] !== undefined) {
-    const url =
-      `https://monex.ifis.co.jp/index.php?sa=find&ta=e&wd=${encodedCode}&x=0&y=0`;
-
-    sheet.getRange(r, col['銘偵']).setFormula(
-      `=HYPERLINK("${url}","銘")`
-    );
+    formulaRow[col['銘偵'] - 1] =
+      `=HYPERLINK("https://monex.ifis.co.jp/index.php?sa=find&ta=e&wd=${encodedCode}&x=0&y=0","銘")`;
   }
 
-  // 全銘
+  /*
+   * 全銘
+   */
   if (col['全銘'] !== undefined) {
-    const url =
-      `http://133.18.243.68/api/master_view.php?mode=api&text=${encodedCode}`;
-
-    sheet.getRange(r, col['全銘']).setFormula(
-      `=HYPERLINK("${url}","全")`
-    );
+    formulaRow[col['全銘'] - 1] =
+      `=HYPERLINK("http://133.18.243.68/api/master_view.php?mode=api&text=${encodedCode}","全")`;
   }
 
   const key = normalizeCode_(code);
-  const info = basicInfoMap ? basicInfoMap[key] : null;
 
-  // 基本情報マスタに対象証券コードがない場合は空白で上書き
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  const info =
+    basicInfoMap
+      ? basicInfoMap[key]
+      : null;
+
+  setRowValue_(
+    row,
     col,
     'PER',
     info ? info.per : ''
   );
 
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  setRowValue_(
+    row,
     col,
     'PBR',
     info ? info.pbr : ''
   );
 
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  setRowValue_(
+    row,
     col,
     '利回り',
     info ? info.yieldValue : ''
   );
 
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  setRowValue_(
+    row,
     col,
     '信用倍率',
     info ? info.marginRatio : ''
   );
 
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  setRowValue_(
+    row,
     col,
     '特色',
     info ? info.feature : ''
   );
 
-  writeValueIfColumnExists_(
-    sheet,
-    r,
+  setRowValue_(
+    row,
     col,
     '連結事業',
-    info ? info.consolidatedBusiness : ''
-  );
-}
-function writeValueIfColumnExists_(sheet, r, col, columnName, value) {
-  if (col[columnName] === undefined) return;
-
-  sheet.getRange(r, col[columnName]).setValue(
-    value === null || value === undefined ? '' : value
+    info
+      ? info.consolidatedBusiness
+      : ''
   );
 }
 
-function writePnLIfPossible_(sheet, r, col, priceMaybe) {
-  if (col['損益'] === undefined || col['株数'] === undefined || col['建値'] === undefined) return;
+/**
+ * 未確定損益を行配列へ設定する
+ */
+function writePnLToRow_(
+  row,
+  col,
+  priceMaybe
+) {
+  if (
+    col['損益'] === undefined ||
+    col['株数'] === undefined ||
+    col['建値'] === undefined
+  ) {
+    return;
+  }
 
-  const qty  = toNumberOrNull_(sheet.getRange(r, col['株数']).getValue());
-  const cost = toNumberOrNull_(sheet.getRange(r, col['建値']).getValue());
-  const px   = toNumberOrNull_(priceMaybe);
-  if (qty == null || cost == null || px == null) return;
+  const qty = toNumberOrNull_(
+    getRowValue_(
+      row,
+      col,
+      '株数'
+    )
+  );
+
+  const cost = toNumberOrNull_(
+    getRowValue_(
+      row,
+      col,
+      '建値'
+    )
+  );
+
+  const px =
+    toNumberOrNull_(priceMaybe);
+
+  if (
+    qty == null ||
+    cost == null ||
+    px == null
+  ) {
+    return;
+  }
 
   let side = '買';
-  if (col['売買'] !== undefined) side = String(sheet.getRange(r, col['売買']).getValue() || '').trim();
 
-  const pnl = (side === '売') ? (cost * qty) - (px * qty) : (px * qty) - (cost * qty);
-  sheet.getRange(r, col['損益']).setValue(pnl);
+  if (col['売買'] !== undefined) {
+    side = String(
+      getRowValue_(
+        row,
+        col,
+        '売買'
+      ) || ''
+    ).trim();
+  }
+
+  const pnl =
+    side === '売'
+      ? cost * qty - px * qty
+      : px * qty - cost * qty;
+
+  setRowValue_(
+    row,
+    col,
+    '損益',
+    pnl
+  );
 }
 
-function writePnLToBothIfPossible_(sheet, r, col, priceMaybe) {
-  if (col['株数'] === undefined || col['建値'] === undefined) return;
+/**
+ * 決済時の損益・確定損益を行配列へ設定する
+ */
+function writePnLToBothRow_(
+  row,
+  col,
+  priceMaybe
+) {
+  if (
+    col['株数'] === undefined ||
+    col['建値'] === undefined
+  ) {
+    return;
+  }
 
-  const qty  = toNumberOrNull_(sheet.getRange(r, col['株数']).getValue());
-  const cost = toNumberOrNull_(sheet.getRange(r, col['建値']).getValue());
-  const px   = toNumberOrNull_(priceMaybe);
-  if (qty == null || cost == null || px == null) return;
+  const qty = toNumberOrNull_(
+    getRowValue_(
+      row,
+      col,
+      '株数'
+    )
+  );
+
+  const cost = toNumberOrNull_(
+    getRowValue_(
+      row,
+      col,
+      '建値'
+    )
+  );
+
+  const px =
+    toNumberOrNull_(priceMaybe);
+
+  if (
+    qty == null ||
+    cost == null ||
+    px == null
+  ) {
+    return;
+  }
 
   let side = '買';
-  if (col['売買'] !== undefined) side = String(sheet.getRange(r, col['売買']).getValue() || '').trim();
 
-  const pnl = (side === '売') ? (cost * qty) - (px * qty) : (px * qty) - (cost * qty);
+  if (col['売買'] !== undefined) {
+    side = String(
+      getRowValue_(
+        row,
+        col,
+        '売買'
+      ) || ''
+    ).trim();
+  }
 
-  if (col['損益'] !== undefined)     sheet.getRange(r, col['損益']).setValue(pnl);
-  if (col['確定損益'] !== undefined) sheet.getRange(r, col['確定損益']).setValue(pnl);
+  const pnl =
+    side === '売'
+      ? cost * qty - px * qty
+      : px * qty - cost * qty;
+
+  setRowValue_(
+    row,
+    col,
+    '損益',
+    pnl
+  );
+
+  setRowValue_(
+    row,
+    col,
+    '確定損益',
+    pnl
+  );
 }
 
-function writePlusColumns_(sheet, r, col, elapsed, endPrice) {
-  const writeIfEmpty = (name) => {
-    if (col[name] === undefined) return;
-    const cur = sheet.getRange(r, col[name]).getValue();
-    if (String(cur).trim() === '') sheet.getRange(r, col[name]).setValue(endPrice);
-  };
-  const overwrite = (name) => {
-    if (col[name] === undefined) return;
-    sheet.getRange(r, col[name]).setValue(endPrice);
+/**
+ * 経過日数別株価を行配列へ設定する
+ */
+function writePlusColumnsToRow_(
+  row,
+  col,
+  elapsed,
+  endPrice
+) {
+  const writeIfEmpty = function(name) {
+    if (col[name] === undefined) {
+      return;
+    }
+
+    const current =
+      getRowValue_(
+        row,
+        col,
+        name
+      );
+
+    if (String(current).trim() === '') {
+      setRowValue_(
+        row,
+        col,
+        name,
+        endPrice
+      );
+    }
   };
 
-  if (elapsed === 0) writeIfEmpty('＋0');
-  else if (elapsed === 1) writeIfEmpty('＋1');
-  else if (elapsed === 2) writeIfEmpty('＋2');
-  else if (elapsed === 3) writeIfEmpty('＋3');
-  else if (elapsed === 4) writeIfEmpty('＋4');
-  else if (elapsed === 5) writeIfEmpty('＋5');
-  else if (elapsed === 6) writeIfEmpty('＋6');
-  else if (elapsed === 7) writeIfEmpty('＋7');
+  const overwrite = function(name) {
+    if (col[name] === undefined) {
+      return;
+    }
 
-  if (elapsed >= 8 && elapsed <= 10)    overwrite('＋10');
-  if (elapsed >= 11 && elapsed <= 22)   overwrite('＋22');
-  if (elapsed >= 23 && elapsed <= 45)   overwrite('＋45');
-  if (elapsed >= 46 && elapsed <= 90)   overwrite('＋90');
-  if (elapsed >= 91 && elapsed <= 120)  overwrite('＋120');
-  if (elapsed >= 121 && elapsed <= 180) overwrite('＋180');
-  if (elapsed >= 181 && elapsed <= 365) overwrite('＋365');
+    setRowValue_(
+      row,
+      col,
+      name,
+      endPrice
+    );
+  };
+
+  if (elapsed === 0) {
+    writeIfEmpty('＋0');
+
+  } else if (elapsed === 1) {
+    writeIfEmpty('＋1');
+
+  } else if (elapsed === 2) {
+    writeIfEmpty('＋2');
+
+  } else if (elapsed === 3) {
+    writeIfEmpty('＋3');
+
+  } else if (elapsed === 4) {
+    writeIfEmpty('＋4');
+
+  } else if (elapsed === 5) {
+    writeIfEmpty('＋5');
+
+  } else if (elapsed === 6) {
+    writeIfEmpty('＋6');
+
+  } else if (elapsed === 7) {
+    writeIfEmpty('＋7');
+  }
+
+  if (elapsed >= 8 && elapsed <= 10) {
+    overwrite('＋10');
+  }
+
+  if (elapsed >= 11 && elapsed <= 22) {
+    overwrite('＋22');
+  }
+
+  if (elapsed >= 23 && elapsed <= 45) {
+    overwrite('＋45');
+  }
+
+  if (elapsed >= 46 && elapsed <= 90) {
+    overwrite('＋90');
+  }
+
+  if (elapsed >= 91 && elapsed <= 120) {
+    overwrite('＋120');
+  }
+
+  if (elapsed >= 121 && elapsed <= 180) {
+    overwrite('＋180');
+  }
+
+  if (elapsed >= 181 && elapsed <= 365) {
+    overwrite('＋365');
+  }
 }
+
+/**
+ * 処理後の値と数式を列単位で一括書き込みする
+ */
+function writeProcessedColumnsBatch_(
+  sheet,
+  dataStart,
+  rowsCount,
+  col,
+  values,
+  formulas
+) {
+  if (rowsCount <= 0) {
+    return;
+  }
+
+  /*
+   * 値として書き込む列
+   */
+  const valueColumnNames = [
+    '建て日',
+    '建値',
+    '経過日数',
+    '騰落率',
+    '決済値',
+    '決済日数',
+    '損益',
+    '確定損益',
+    '＋0',
+    '＋1',
+    '＋2',
+    '＋3',
+    '＋4',
+    '＋5',
+    '＋6',
+    '＋7',
+    '＋10',
+    '＋22',
+    '＋45',
+    '＋90',
+    '＋120',
+    '＋180',
+    '＋365',
+    'PER',
+    'PBR',
+    '利回り',
+    '信用倍率',
+    '特色',
+    '連結事業'
+  ];
+
+  for (
+    let i = 0;
+    i < valueColumnNames.length;
+    i++
+  ) {
+    const name =
+      valueColumnNames[i];
+
+    if (col[name] === undefined) {
+      continue;
+    }
+
+    const columnIndex =
+      col[name] - 1;
+
+    const outputValues = [];
+
+    for (
+      let r = 0;
+      r < rowsCount;
+      r++
+    ) {
+      outputValues.push([
+        values[r][columnIndex]
+      ]);
+    }
+
+    const range = sheet.getRange(
+      dataStart,
+      col[name],
+      rowsCount,
+      1
+    );
+
+    range.setValues(outputValues);
+
+    if (
+      name === 'PER' ||
+      name === 'PBR' ||
+      name === '利回り' ||
+      name === '信用倍率'
+    ) {
+      range.setHorizontalAlignment('right');
+    }
+
+  }
+
+  /*
+   * HYPERLINK数式として書き込む列
+   */
+  const formulaColumnNames = [
+    '株探',
+    '四季',
+    '銘偵',
+    '全銘'
+  ];
+
+  for (
+    let i = 0;
+    i < formulaColumnNames.length;
+    i++
+  ) {
+    const name =
+      formulaColumnNames[i];
+
+    if (col[name] === undefined) {
+      continue;
+    }
+
+    const columnIndex =
+      col[name] - 1;
+
+    const outputFormulas = [];
+
+    for (
+      let r = 0;
+      r < rowsCount;
+      r++
+    ) {
+      outputFormulas.push([
+        formulas[r][columnIndex]
+      ]);
+    }
+
+    sheet
+      .getRange(
+        dataStart,
+        col[name],
+        rowsCount,
+        1
+      )
+      .setFormulas(outputFormulas)
+      .setHorizontalAlignment('center');
+  }
+}
+
 
 function getSpreadsheetFileFromMyDrive_(folderName, fileName) {
   const folders = DriveApp.getFoldersByName(folderName);
