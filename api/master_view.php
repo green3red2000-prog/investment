@@ -193,13 +193,31 @@ $mode = strtolower(trim((string)($_GET['mode'] ?? '')));
 if ($mode === 'api') {
   $text = trim((string)($_GET['text'] ?? ''));
 
+  // 値セルの背景色指定
+  // 例:
+  //   red=PER,46,134
+  //   blue=PBR,yield,116
+  $redTargets = parseHighlightTargets((string)($_GET['red'] ?? ''));
+  $blueTargets = parseHighlightTargets((string)($_GET['blue'] ?? ''));
+
   if (preg_match('/^[0-9A-Za-z]{4}$/', $text)) {
     try {
       $code4 = $text;
 
-      $basic = fetchMasterRowByCode_sqlite('basic', $code4);
-      $daily = fetchMasterRowByCode_sqlite('daily', $code4);
+      $basic = fetchMasterRowByCode_sqlite(
+        'basic',
+        $code4,
+        $redTargets,
+        $blueTargets
+      );
 
+      $daily = fetchMasterRowByCode_sqlite(
+        'daily',
+        $code4,
+        $redTargets,
+        $blueTargets
+      );
+      
       header('Content-Type: text/html; charset=UTF-8');
       echo renderStackedPage($code4, $basic, $daily);
       exit;
@@ -229,7 +247,7 @@ exit;
  * kind: basic|daily
  * @return array{meta:string, rowsHtml:string, companyName?:string, debug?:string}
  */
-function fetchMasterRowByCode_sqlite(string $kind, string $code4): array {
+function fetchMasterRowByCode_sqlite(string $kind,string $code4,array $redTargets = [], array $blueTargets = []): array {
   $kind = strtolower($kind);
   if ($kind !== 'basic' && $kind !== 'daily') {
     throw new InvalidArgumentException("invalid kind: {$kind}");
@@ -269,7 +287,7 @@ function fetchMasterRowByCode_sqlite(string $kind, string $code4): array {
 
   return [
     'meta' => $meta . " / 証券コード={$codeKey}",
-    'rowsHtml' => buildVerticalRowsHtml($headers, $cells),
+    'rowsHtml' => buildVerticalRowsHtml($headers,$cells,$kind,$redTargets,$blueTargets),
     'companyName' => $company,
     'debug' => '',
   ];
@@ -523,19 +541,157 @@ function normalizeCode4($x): string {
   return substr($d, -4);
 }
 
-function buildVerticalRowsHtml(array $headers, array $row): string {
+/**
+ * red / blue パラメータをカンマ区切りで解析する。
+ *
+ * 例:
+ *   PER,46,134
+ *   PBR,yield,116
+ *
+ * @return array<string,bool>
+ */
+function parseHighlightTargets(string $raw): array {
+  $targets = [];
+
+  foreach (explode(',', $raw) as $item) {
+    $item = trim($item);
+    if ($item === '') continue;
+
+    /*
+     * 基本情報マスタ用の名前は大文字・小文字を区別しない。
+     * yield は YIELD、Yield などでも同じ指定として扱う。
+     */
+    if (preg_match('/^[A-Za-z]+$/', $item)) {
+      $key = strtoupper($item);
+
+      if (in_array($key, ['PER', 'PBR', 'YIELD', 'ROC', 'LSR'], true)) {
+        $targets[$key] = true;
+      }
+
+      continue;
+    }
+
+    /*
+     * 日足分析マスタ用の番号。
+     * 先頭ゼロは除去し、46 と 046 を同じ指定として扱う。
+     */
+    if (preg_match('/^\d+$/', $item)) {
+      $targets[(string)((int)$item)] = true;
+    }
+  }
+
+  return $targets;
+}
+/**
+ * 指定された見出しの値セルに適用する背景色を返す。
+ *
+ * red と blue の両方に同じ項目が指定された場合は red を優先する。
+ */
+function resolveHighlightColor(
+  string $kind,
+  string $headerName,
+  array $redTargets,
+  array $blueTargets
+): string {
+  $targetKey = resolveHighlightTargetKey($kind, $headerName);
+
+  if ($targetKey === '') {
+    return '';
+  }
+
+  // 同じ項目が両方に指定された場合は red を優先
+  if (isset($redTargets[$targetKey])) {
+    return '#FFBBC2';
+  }
+
+  if (isset($blueTargets[$targetKey])) {
+    return '#C1C9FF';
+  }
+
+  return '';
+}
+function buildVerticalRowsHtml(
+  array $headers,
+  array $row,
+  string $kind = '',
+  array $redTargets = [],
+  array $blueTargets = []
+): string {
   $out = [];
   $n = count($headers);
+
   for ($c = 0; $c < $n; $c++) {
     $hname = trim((string)($headers[$c] ?? ''));
     if ($hname === '') continue;
 
     $val = $row[$c] ?? '';
-    $out[] = '<tr><th>' . h($hname) . '</th><td>' . h(formatCellForHtml($val, $hname)) . '</td></tr>';
-  }
-  return $out ? implode("\n", $out) : '<tr><td>（表示項目なし）</td></tr>';
-}
 
+    $backgroundColor = resolveHighlightColor(
+      $kind,
+      $hname,
+      $redTargets,
+      $blueTargets
+    );
+
+    $cellStyle = '';
+    if ($backgroundColor !== '') {
+      $cellStyle = ' style="background-color:' . h($backgroundColor) . ';"';
+    }
+
+    $out[] =
+      '<tr>' .
+      '<th' . $cellStyle . '>' . h($hname) . '</th>' .
+      '<td' . $cellStyle . '>' .
+      h(formatCellForHtml($val, $hname)) .
+      '</td>' .
+      '</tr>';
+  }
+
+  return $out
+    ? implode("\n", $out)
+    : '<tr><td>（表示項目なし）</td></tr>';
+}
+/**
+ * マスタの見出しから、red / blue パラメータと照合するキーを取得する。
+ *
+ * basic:
+ *   PER      → PER
+ *   PBR      → PBR
+ *   利回り   → YIELD
+ *   騰落率   → ROC
+ *   信用倍率 → LSR
+ *
+ * daily:
+ *   (46)～   → 46
+ *   (116)～  → 116
+ */
+function resolveHighlightTargetKey(
+  string $kind,
+  string $headerName
+): string {
+  $kind = strtolower(trim($kind));
+  $headerName = trim($headerName);
+
+  if ($kind === 'basic') {
+    $basicMap = [
+      'PER'      => 'PER',
+      'PBR'      => 'PBR',
+      '利回り'   => 'YIELD',
+      '騰落率'   => 'ROC',
+      '信用倍率' => 'LSR',
+    ];
+
+    return $basicMap[$headerName] ?? '';
+  }
+
+  if ($kind === 'daily') {
+    if (preg_match('/^\((\d+)\)/', $headerName, $matches)) {
+      return (string)((int)$matches[1]);
+    }
+  }
+
+  return '';
+}
 function formatCellForHtml($v, string $headerName = ''): string {
   if ($v === null) return '';
   if (is_array($v)) return json_encode($v, JSON_UNESCAPED_UNICODE) ?: '';
