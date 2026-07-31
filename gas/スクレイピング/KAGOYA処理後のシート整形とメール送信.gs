@@ -40,6 +40,7 @@ function postProcess_messages_5minTrigger() {
       '全銘柄四季報情報取得_メッセージ_',
       '証券コード取得_メッセージ_',
       'カレンダー取得_メッセージ_',
+      '四季報情報更新監視_メッセージ_',
       '指数日足取得_メッセージ_',
       '全銘柄日足取得_メッセージ_',
       '全銘柄日足分析_メッセージ_',
@@ -47,8 +48,8 @@ function postProcess_messages_5minTrigger() {
     ],
 
     // ★追加：コピーしないプレフィックス
-    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析']),
-
+    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '四季報情報更新監視', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析']),
+    
     // ★追加：マスタ更新するプレフィックス
     needsBaseInfoMasterUpdate: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得']),
 
@@ -268,7 +269,14 @@ function processTodaysNewsLatest_(srcFolder, CONFIG) {
   const createdRows = 1 + copyRows.length; // ヘッダ含む
   const newsCount = Math.max(createdRows - 1, 0);
   const subject = outName;
-  const body = `本日のニュース数は、${newsCount}銘柄でした。\n\n${outSs.getUrl()}`;
+  const body =
+    `本日のニュース数は、${newsCount}銘柄でした。\n\n` +
+    `${outSs.getUrl()}\n\n` +
+    `本日のニュース_最新：\n` +
+    `https://docs.google.com/spreadsheets/d/1AEegW2usuYpw2QwqRaH42PnuVwljkCX_uwnsi0VsHCs/edit?gid=0#gid=0\n\n` +
+    `未読記事の一括取得：\n` +
+    `https://script.google.com/macros/s/AKfycbxoMcqwlo8oCRBrCwDqHms7EIJ51H_JYtPao8OXYx_OZ8fDX-GjtNFUWoWsT7lYqMr7Ew/exec`;
+
   GmailApp.sendEmail(CONFIG.mailTo, subject, body);
 
   // 要点ログ
