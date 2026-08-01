@@ -424,38 +424,82 @@ function http_get_text(string $url, array $opt = []): string {
 // =======================================================
 
 /**
- * Playwright(Chromium) で DOM を取得して HTML を返す
- * - プロキシは scraping_common.php の WEBSHARE_PROXIES から選ぶ（=一元管理）
- * - sticky が有効なら同一プロキシを使う（403等は http_session_reset_proxy() で回転）
+ * PlaywrightでDOMを取得し、HTMLだけを返す。
+ *
+ * 既存プログラムとの互換性維持用。
  */
-function http_get_text_browser(string $url, array $opt = []): string {
+function http_get_text_browser(
+  string $url,
+  array $opt = []
+): string {
+
+  $result = http_get_text_browser_with_meta($url, $opt);
+
+  return $result['html'];
+}
+
+/**
+ * PlaywrightでDOMを取得し、HTMLとメタ情報を返す。
+ *
+ * @return array{
+ *   html:string,
+ *   http_code:int,
+ *   proxy:string,
+ *   final_url:string,
+ *   title:string
+ * }
+ */
+function http_get_text_browser_with_meta(
+  string $url,
+  array $opt = []
+): array {
+
   $timeoutSec = (int)($opt['timeout'] ?? 60);
   $retryMax   = (int)($opt['retry_max'] ?? 3);
   $sleepMs    = (int)($opt['retry_sleep_ms'] ?? 1200);
 
+  /*
+   * trueの場合、HTTP 403や429などでも、
+   * Playwright自体がHTMLを取得できていれば結果を返す。
+   *
+   * テスト起動でHTTPコードを表示するために使用する。
+   */
+  $allowHttpError = (bool)($opt['allow_http_error'] ?? false);
+
   $lastErr = null;
 
   for ($try = 1; $try <= $retryMax; $try++) {
+
     $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
       ?? pick_random_proxy_credential();
 
     $proxyHp = proxy_hostport_((string)$cred['proxy']);
 
     $outDir = $opt['out_dir']
-      ?? '/opt/invest/scraping/tmp';
+      ?? SCRAPING_TMP_DIR;
 
     ensure_dir($outDir);
+
+    $randomSuffix = bin2hex(random_bytes(4));
 
     $outPath =
       $outDir .
       '/pw_' .
       date('Ymd_His') .
       '_' .
-      bin2hex(random_bytes(4)) .
+      $randomSuffix .
       '.html';
 
+    $metaPath =
+      $outDir .
+      '/pw_' .
+      date('Ymd_His') .
+      '_' .
+      $randomSuffix .
+      '.json';
+
     try {
-      // Node にプロキシをenvで渡す。
+
       $env = [
         'WS_PROXY_SERVER' => $cred['proxy'],
         'WS_PROXY_USER'   => $cred['user'],
@@ -463,11 +507,12 @@ function http_get_text_browser(string $url, array $opt = []): string {
       ];
 
       $cmd = sprintf(
-        '%s %s %s %s',
+        '%s %s %s %s %s',
         escapeshellcmd(BROWSER_FETCH_NODE_BIN),
         escapeshellarg(BROWSER_FETCH_SCRIPT),
         escapeshellarg($url),
-        escapeshellarg($outPath)
+        escapeshellarg($outPath),
+        escapeshellarg($metaPath)
       );
 
       $descriptors = [
@@ -491,19 +536,12 @@ function http_get_text_browser(string $url, array $opt = []): string {
       }
 
       $status = proc_get_status($proc);
-      $pid = $status['pid'] ?? 0;
+      $pid = (int)($status['pid'] ?? 0);
 
       fclose($pipes[0]);
 
-      stream_set_timeout(
-        $pipes[1],
-        $timeoutSec
-      );
-
-      stream_set_timeout(
-        $pipes[2],
-        $timeoutSec
-      );
+      stream_set_timeout($pipes[1], $timeoutSec);
+      stream_set_timeout($pipes[2], $timeoutSec);
 
       $stdout = '';
       $stderr = '';
@@ -512,16 +550,28 @@ function http_get_text_browser(string $url, array $opt = []): string {
       $start = time();
 
       while (true) {
+
         $stdout .= stream_get_contents($pipes[1]);
         $stderr .= stream_get_contents($pipes[2]);
 
         $status = proc_get_status($proc);
 
         if (!$status['running']) {
+          /*
+           * proc_get_status()で終了コードを取得しておく。
+           * このあとproc_close()が-1を返す場合があるため。
+           */
+          $statusExitCode = (int)($status['exitcode'] ?? -1);
+
+          if ($statusExitCode >= 0) {
+            $exitCode = $statusExitCode;
+          }
+
           break;
         }
 
         if ((time() - $start) >= $timeoutSec) {
+
           fwrite(
             STDERR,
             "[BROWSER][timeout] {$timeoutSec}s " .
@@ -556,30 +606,108 @@ function http_get_text_browser(string $url, array $opt = []): string {
       $closedExitCode = @proc_close($proc);
 
       if ($exitCode === null) {
-        $exitCode = is_int($closedExitCode)
+        /*
+         * proc_close()が正常な終了コードを返した場合だけ採用する。
+         * proc_get_status()後は-1になる場合がある。
+         */
+        $exitCode = (
+          is_int($closedExitCode) &&
+          $closedExitCode >= 0
+        )
           ? $closedExitCode
           : -1;
       }
 
       if (
-        $exitCode === 0 &&
-        file_exists($outPath)
+        $exitCode !== 0 ||
+        !is_file($outPath) ||
+        !is_file($metaPath)
       ) {
-        $html = file_get_contents($outPath);
+       $lastErr =
+         "Playwright failed(exit={$exitCode}) " .
+         "via {$proxyHp} url={$url} " .
+         "stdout=" . trim($stdout) . " " .
+         "stderr=" . trim($stderr);
+      } else {
 
-        if ($html === false || $html === '') {
+        $html = file_get_contents($outPath);
+        $metaJson = file_get_contents($metaPath);
+
+        if (
+          $html === false ||
+          $html === ''
+        ) {
           $lastErr =
             "Playwright returned empty html: {$url}";
+        } elseif (
+          $metaJson === false ||
+          $metaJson === ''
+        ) {
+          $lastErr =
+            "Playwright returned empty meta json: {$url}";
         } else {
-          return $html;
+
+          $meta = json_decode($metaJson, true);
+
+          if (!is_array($meta)) {
+            $lastErr =
+              "Playwright meta json decode failed: {$url}";
+          } else {
+
+            $httpCode = (int)($meta['http_code'] ?? 0);
+            $finalUrl = (string)($meta['final_url'] ?? '');
+            $title    = (string)($meta['title'] ?? '');
+
+            $isBlockedHtml =
+              stripos($html, 'Access Denied') !== false ||
+              stripos($html, 'Forbidden') !== false ||
+              stripos($html, 'Request blocked') !== false ||
+              stripos($html, 'captcha') !== false ||
+              stripos($html, 'Cloudflare') !== false ||
+              stripos(
+                $html,
+                'cf-browser-verification'
+              ) !== false;
+
+            /*
+             * テストモードではHTTPエラーも結果として返し、
+             * 呼び出し元でコードを表示する。
+             */
+            if ($allowHttpError) {
+              return [
+                'html'       => $html,
+                'http_code'  => $httpCode,
+                'proxy'      => $proxyHp,
+                'final_url'  => $finalUrl,
+                'title'      => $title,
+              ];
+            }
+
+            /*
+             * 通常運用はHTTP 200かつ
+             * ブロックHTMLでない場合だけ成功。
+             */
+            if (
+              $httpCode === 200 &&
+              !$isBlockedHtml
+            ) {
+              return [
+                'html'       => $html,
+                'http_code'  => $httpCode,
+                'proxy'      => $proxyHp,
+                'final_url'  => $finalUrl,
+                'title'      => $title,
+              ];
+            }
+
+            $lastErr =
+              "Playwright HTTP {$httpCode} " .
+              "blocked/rejected via {$proxyHp}: {$url}";
+          }
         }
-      } else {
-        $lastErr =
-          "Playwright failed(exit={$exitCode}) " .
-          "via {$proxyHp} url={$url} " .
-          "stderr=" .
-          trim($stderr);
       }
+
+      remember_bad_proxy_((string)$cred['proxy']);
 
       fwrite(
         STDERR,
@@ -587,7 +715,9 @@ function http_get_text_browser(string $url, array $opt = []): string {
         "proxy={$proxyHp} {$lastErr}\n"
       );
 
-      usleep($sleepMs * 1000);
+      if ($try < $retryMax) {
+        usleep($sleepMs * 1000);
+      }
 
       if (
         $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
@@ -595,13 +725,15 @@ function http_get_text_browser(string $url, array $opt = []): string {
       ) {
         http_session_reset_proxy();
       }
+
     } finally {
-      /*
-       * Playwrightが作成した一時HTMLは、
-       * 成功・失敗・タイムアウトを問わず削除する。
-       */
+
       if (is_file($outPath)) {
         @unlink($outPath);
+      }
+
+      if (is_file($metaPath)) {
+        @unlink($metaPath);
       }
     }
   }

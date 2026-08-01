@@ -8,8 +8,56 @@ declare(strict_types=1);
  * - 末尾に追記（時刻は日付型として入れる = USER_ENTERED）
  * - 追記後、時刻(A列)降順でソート
  *
- * 実行例:
- *   php /opt/invest/sheets-php/nikkei_news_latest.php
+ * 通常起動:
+ *   php /opt/invest/scraping/today_news_latest.php
+ *
+ * テスト起動:
+ *   php /opt/invest/scraping/today_news_latest.php --test=NEWS
+ *   php /opt/invest/scraping/today_news_latest.php --test=REUTERS
+ *   php /opt/invest/scraping/today_news_latest.php --test=BLOOMBERG
+ *   php /opt/invest/scraping/today_news_latest.php --test=XTECH
+ *   php /opt/invest/scraping/today_news_latest.php --test=SHIKIHO
+ *   php /opt/invest/scraping/today_news_latest.php --test=JPX
+ *
+ * HTMLファイル出力付きテスト:
+ *   php /opt/invest/scraping/today_news_latest.php --test=NEWS --fileout
+ *
+ * テスト起動時:
+ * - 指定したサイトの1ページ目のみ取得する
+ * - HTTPレスポンスコードを表示する
+ * - 取得したHTMLサイズをKB単位で表示する
+ * - パースした「時刻」「ソース」「見出し」を表示する
+ * - --fileout指定時は /opt/invest/scraping/tmp へHTMLを保存する
+ * - Google Drive／Google Sheetsへの書き込みは行わない
+ *
+ * 【通常起動時の取得対象】
+ *
+ * ・日経新聞
+ * 　　毎回1ページ目を取得する
+ * 　　未登録記事が1件以上ある場合は次ページを取得し、
+ * 　　未登録記事が0件のページで終了する（最大10ページ）
+ *
+ * ・ロイター
+ * 　　毎回取得（1ページ）
+ *
+ * ・ブルームバーグ
+ * 　　毎回取得（1ページ）
+ * 　　※現在コメントアウト中
+ *
+ * ・日経クロステック
+ * 　　毎回取得（1ページ）
+ *
+ * ・四季報オンライン
+ * 　　6時間以上経過している場合のみ取得（4ページ）
+ *
+ * ・JPX：サイト更新情報
+ * 　　6時間以上経過している場合のみ取得
+ *
+ * ・JPX：マーケットニュース
+ * 　　6時間以上経過している場合のみ取得
+ *
+ * ・JPX：お知らせ
+ * 　　6時間以上経過している場合のみ取得
  */
 
 require __DIR__ . '/lib/scraping_common.php';
@@ -60,7 +108,68 @@ const SHIKIHO_MAX_AGE_DAYS = 8; // ★ 8日前より古いニュースは反映�
 const JPX_INTERVAL_SEC = 6 * 60 * 60; // 6時間
 const JPX_LASTRUN_FILE = '/opt/invest/scraping/state/last_run_jpx.txt';
 
-// proxy は実行単位で固定（必要なら false に）
+// ===============================
+// 起動引数
+// ===============================
+$cliOptions = getopt('', [
+  'test:',
+  'fileout',
+]);
+
+$testTarget = isset($cliOptions['test'])
+  ? strtoupper(trim((string)$cliOptions['test']))
+  : '';
+
+$fileout = array_key_exists('fileout', $cliOptions);
+
+if ($fileout && $testTarget === '') {
+  fwrite(STDERR, "[ERROR] --fileout は --test と同時に指定してください。\n");
+  exit(1);
+}
+
+if ($testTarget !== '') {
+  // テスト中は取得開始時に選んだ1個のプロキシを固定する
+  http_session_begin(true);
+
+  $testStartedAt = microtime(true);
+  $testExitCode  = 0;
+
+  echo "[TEST] Start  : " .
+    (new DateTime(
+      'now',
+      new DateTimeZone(TIMEZONE)
+    ))->format('Y-m-d H:i:s') .
+    "\n";
+
+  try {
+    run_test_mode_($testTarget, $fileout);
+  } catch (Throwable $e) {
+    fwrite(
+      STDERR,
+      "[TEST][ERROR] " . $e->getMessage() . "\n"
+    );
+
+    $testExitCode = 1;
+  } finally {
+    $elapsedSec = microtime(true) - $testStartedAt;
+
+    echo "[TEST] End    : " .
+      (new DateTime(
+        'now',
+        new DateTimeZone(TIMEZONE)
+      ))->format('Y-m-d H:i:s') .
+      "\n";
+
+    printf(
+      "[TEST] Elapsed: %.3f sec\n",
+      $elapsedSec
+    );
+  }
+
+  exit($testExitCode);
+}
+
+// proxy は通常実行ではリクエストごとに選択
 http_session_begin(false);
 
 // ===============================
@@ -111,31 +220,90 @@ $newRows = [];
 
 // ---- 日経新聞 ----
 for ($page = 1; $page <= MAX_PAGE; $page++) {
-  $url = ($page === 1) ? NEWS_URL : (NEWS_URL . '?page=' . $page);
+  $url = ($page === 1)
+    ? NEWS_URL
+    : (NEWS_URL . '?page=' . $page);
+
+  // このページで新規に見つかった記事数
+  $newCountOnPage = 0;
+
   try {
-    $html = http_get_text($url);
+    $html = http_get_text_browser($url, [
+      'timeout'   => 120,
+      'retry_max' => 3,
+    ]);
+
     $articles = parse_nikkei_news_($html);
+    
+    if (count($articles) === 0) {
+      throw new RuntimeException(
+      "日経新聞のパース結果が0件でした。"
+      );
+    }
 
     foreach ($articles as $a) {
       $u = $a['url'];
-      if (isset($existingUrls[$u])) continue;
-      $existingUrls[$u] = true;
 
-      $jst = iso_to_jst_string_($a['datetime']); // yyyy-MM-dd HH:mm:ss
+      if (isset($existingUrls[$u])) {
+        continue;
+      }
+
+      $existingUrls[$u] = true;
+      $newCountOnPage++;
+
+      $jst = iso_to_jst_string_($a['datetime']);
       $id  = make_id16_($jst, $a['title']);
 
-      $newRows[] = [$jst, SOURCE_NAME_NIKKEI, $a['title'], $u, $id, ''];
+      $newRows[] = [
+        $jst,
+        SOURCE_NAME_NIKKEI,
+        $a['title'],
+        $u,
+        $id,
+        '',
+      ];
     }
+
+    echo
+      "[INFO] Nikkei page {$page}: " .
+      "articles=" . count($articles) . " " .
+      "new={$newCountOnPage}\n";
+
   } catch (Throwable $e) {
-    fwrite(STDERR, "[WARN] Nikkei page {$page} fetch/parse failed: " . $e->getMessage() . "\n");
+    fwrite(
+      STDERR,
+      "[WARN] Nikkei page {$page} fetch/parse failed: " .
+      $e->getMessage() .
+      "\n"
+    );
+
+    /*
+     * 取得失敗時は「全件既存」とは判断できないため、
+     * 次ページへ進まず終了する。
+     */
+    break;
   }
 
-  if ($page < MAX_PAGE) usleep(SLEEP_BETWEEN_PAGES_US);
+  /*
+   * このページに未登録記事が1件もなければ、
+   * それより古い次ページ以降も取得しない。
+   */
+  if ($newCountOnPage === 0) {
+    echo
+      "[INFO] Nikkei: stop at page {$page} " .
+      "(no new articles)\n";
+
+    break;
+  }
+
+  if ($page < MAX_PAGE) {
+    usleep(SLEEP_BETWEEN_PAGES_US);
+  }
 }
 
 // ---- ロイター ----
 try {
-  $html = http_get_text(REUTERS_URL);
+  $html = http_get_text_browser(REUTERS_URL, ['timeout'   => 120,'retry_max' => 3,]);
   $articles = parse_reuters_news_($html);
 
   foreach ($articles as $a) {
@@ -155,7 +323,7 @@ try {
 // ---- ブルームバーグ ----
 /*
 try {
-  $html = http_get_text(BLOOMBERG_URL);
+  $html = http_get_text_browser(BLOOMBERG_URL, ['timeout'   => 120,'retry_max' => 3,]);
   $articles = parse_bloomberg_news_($html);
 
   foreach ($articles as $a) {
@@ -175,7 +343,7 @@ try {
 
 // ---- xTECH（時刻は「現在時刻(JST)」仕様） ----
 try {
-  $html = http_get_text(XTECH_URL);
+  $html = http_get_text_browser(XTECH_URL, ['timeout'   => 120,'retry_max' => 3,]);
   $articles = parse_xtech_news_($html);
 
   $nowJst = now_jst_string_();
@@ -198,7 +366,7 @@ if (should_run_shikiho_()) {
   try {
     foreach (SHIKIHO_URLS as $url) {
       $html = http_get_text_browser($url, [
-        'timeout'   => 30,
+        'timeout'   => 120,
         'retry_max' => 2,
       ]);
 
@@ -237,7 +405,7 @@ if (should_run_jpx_()) {
   try {
     // (A) サイト更新情報
     $html = http_get_text_browser(JPX_URL_SITE_UPDATES, [
-      'timeout'   => 30,
+      'timeout'   => 120,
       'retry_max' => 2,
     ]);
     $items = parse_jpx_site_updates_($html);
@@ -258,7 +426,7 @@ if (should_run_jpx_()) {
 
     // (B) マーケットニュース
     $html = http_get_text_browser(JPX_URL_MARKET_NEWS, [
-      'timeout'   => 30,
+      'timeout'   => 120,
       'retry_max' => 2,
     ]);
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
@@ -277,7 +445,7 @@ if (should_run_jpx_()) {
 
     // (C) お知らせ（news-releases）
     $html = http_get_text_browser(JPX_URL_INFO, [
-      'timeout'   => 30,
+      'timeout'   => 120,
       'retry_max' => 2,
     ]);
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
@@ -331,6 +499,194 @@ if ($totalRows > 1) {
 }
 
 echo "DONE\n";
+
+// ===============================
+// テスト起動
+// ===============================
+
+/**
+ * 指定したニュースサイトの1ページ目だけを取得し、
+ * HTTPコード、HTMLサイズ、パース結果をコンソールへ表示する。
+ *
+ * --fileout指定時は、取得HTMLをSCRAPING_TMP_DIRへ保存する。
+ */
+function run_test_mode_(string $target, bool $fileout): void {
+
+  $targets = [
+    'NEWS' => [
+      'url'    => NEWS_URL,
+      'source' => SOURCE_NAME_NIKKEI,
+      'parser' => 'parse_nikkei_news_',
+    ],
+    'REUTERS' => [
+      'url'    => REUTERS_URL,
+      'source' => SOURCE_NAME_REUTERS,
+      'parser' => 'parse_reuters_news_',
+    ],
+    'BLOOMBERG' => [
+      'url'    => BLOOMBERG_URL,
+      'source' => SOURCE_NAME_BLOOMBERG,
+      'parser' => 'parse_bloomberg_news_',
+    ],
+    'XTECH' => [
+      'url'    => XTECH_URL,
+      'source' => SOURCE_NAME_XTECH,
+      'parser' => 'parse_xtech_news_',
+    ],
+    'SHIKIHO' => [
+      // 四季報はSHIKIHO_URLSの先頭だけをテストする
+      'url'    => SHIKIHO_URLS[0],
+      'source' => SHIKIHO_SOURCE_NAME,
+      'parser' => 'parse_shikiho_news_',
+    ],
+    'JPX' => [
+      // JPXはマーケットニュースだけをテストする
+      'url'    => JPX_URL_MARKET_NEWS,
+      'source' => JPX_SOURCE_MARKET_NEWS,
+      'parser' => null,
+    ],
+  ];
+
+  if (!isset($targets[$target])) {
+    throw new InvalidArgumentException(
+      "不正な --test の値です: {$target}\n" .
+      "指定可能値: NEWS, REUTERS, BLOOMBERG, XTECH, SHIKIHO, JPX"
+    );
+  }
+
+  $config = $targets[$target];
+  $url    = (string)$config['url'];
+  $source = (string)$config['source'];
+  $parser = (string)$config['parser'];
+
+  echo "========================================\n";
+  echo "[TEST] Target : {$target}\n";
+  echo "[TEST] URL    : {$url}\n";
+  echo "========================================\n";
+
+ $result = http_get_text_browser_with_meta($url, ['timeout'          => 120,'retry_max'        => 1, 'allow_http_error' => true,]);
+
+  $html       = $result['html'];
+  $httpCode   = $result['http_code'];
+  $proxy      = $result['proxy'];
+  $finalUrl   = $result['final_url'];
+  $pageTitle  = $result['title'];
+  $htmlSizeKb = (int)round(strlen($html) / 1024);
+
+  echo "プロキシ              : {$proxy}\n";
+  echo "HTTPレスポンスコード  : {$httpCode}\n";
+  echo "最終URL               : {$finalUrl}\n";
+  echo "ページタイトル        : {$pageTitle}\n";
+  echo "HTMLサイズ            : {$htmlSizeKb}KB\n";
+
+  if ($fileout) {
+    ensure_dir(SCRAPING_TMP_DIR);
+
+    $timestamp = (new DateTime(
+      'now',
+      new DateTimeZone(TIMEZONE)
+    ))->format('YmdHis');
+
+    $outPath = SCRAPING_TMP_DIR .
+      '/' .
+      $target .
+      '_' .
+      $timestamp .
+      '.html';
+
+    if (file_put_contents($outPath, $html) === false) {
+      throw new RuntimeException(
+        "HTMLファイルの出力に失敗しました: {$outPath}"
+      );
+    }
+
+    echo "HTML出力先            : {$outPath}\n";
+  }
+
+  if ($httpCode !== 200) {
+    throw new RuntimeException(
+      "HTTPレスポンスコードが200ではありません: {$httpCode}"
+    );
+  }
+
+  if ($target === 'JPX') {
+    $articles = parse_jpx_list_common_(
+      $html,
+      'JPX-news-list-date',
+      'JPX-news-list-title'
+    );
+  } else {
+    if (!is_string($parser) || !is_callable($parser)) {
+      throw new RuntimeException(
+        "パース関数が呼び出せません: " . (string)$parser
+      );
+    }
+
+    $articles = $parser($html);
+  }
+
+  $articleCount = count($articles);
+
+  echo "パース件数            : {$articleCount}件\n";
+
+  if ($articleCount === 0) {
+    throw new RuntimeException(
+      "HTMLは取得できましたが、パース結果が0件でした。"
+    );
+  }
+
+  echo "----------------------------------------\n";
+  echo "時刻\tソース\t見出し\n";
+  echo "----------------------------------------\n";
+
+  $nowJst = now_jst_string_();
+  $nowHms = (new DateTime(
+    'now',
+    new DateTimeZone(TIMEZONE)
+  ))->format('H:i:s');
+
+  foreach ($articles as $article) {
+    switch ($target) {
+      case 'NEWS':
+      case 'REUTERS':
+      case 'BLOOMBERG':
+        $time = iso_to_jst_string_(
+          (string)$article['datetime']
+        );
+        break;
+
+      case 'XTECH':
+        // 通常処理と同様、取得時点の現在時刻を使用する
+        $time = $nowJst;
+        break;
+
+      case 'SHIKIHO':
+        $time = shikiho_mdhi_to_jst_string_(
+          (string)$article['mdhi']
+        );
+        break;
+        
+      case 'JPX':
+        $time = jpx_ymd_to_jst_string_(
+          (string)$article['ymd'],
+          $nowHms
+        );
+        break;
+
+      default:
+        throw new LogicException(
+          "未対応のテスト対象です: {$target}"
+        );
+    }
+
+    $title = trim((string)($article['title'] ?? ''));
+
+    echo "{$time}\t{$source}\t{$title}\n";
+  }
+
+  echo "----------------------------------------\n";
+  echo "[TEST] DONE\n";
+}
 
 // ===============================
 // Google OAuth (Drive + Sheets) / Drive検索

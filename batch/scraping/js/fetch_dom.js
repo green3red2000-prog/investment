@@ -4,12 +4,16 @@ const fs = require('fs');
 (async () => {
   const url = process.argv[2];
   const out = process.argv[3];
-  if (!url || !out) {
-    console.error('Usage: node fetch_dom.js <url> <output>');
+  const metaOut = process.argv[4];
+
+  if (!url || !out || !metaOut) {
+    console.error(
+      'Usage: node fetch_dom.js <url> <output_html> <output_meta_json>'
+    );
     process.exit(1);
   }
   
-  const HARD_TIMEOUT_MS = 90_000;
+  const HARD_TIMEOUT_MS = 115_000;
   const hardTimeout = setTimeout(() => {
     console.error(`[FATAL] hard timeout ${HARD_TIMEOUT_MS}ms url=${url}`);
     process.exit(2);
@@ -31,6 +35,7 @@ const fs = require('fs');
 
   console.log(`[INFO] url=${url}`);
   console.log(`[INFO] out=${out}`);
+  console.log(`[INFO] metaOut=${metaOut}`);
   console.log(`[INFO] proxy=${proxyServer || '(none)'}`);
 
   const launchOpt = {
@@ -46,6 +51,23 @@ const fs = require('fs');
   });
 
   const page = await context.newPage();
+  
+  // HTML解析に不要な重いリソースを遮断する。
+  // script、stylesheet、xhr、fetchはDOM生成に必要なので遮断しない。
+  await page.route('**/*', async route => {
+    const resourceType = route.request().resourceType();
+
+    if (
+      resourceType === 'image' ||
+      resourceType === 'media' ||
+      resourceType === 'font'
+    ) {
+      await route.abort();
+      return;
+    }
+
+    await route.continue();
+  });
 
   await page.setExtraHTTPHeaders({
     'User-Agent':
@@ -56,12 +78,48 @@ const fs = require('fs');
   });
 
   // --- ここから改修ポイント ---
-  // networkidle は広告/計測があると永遠に終わらないことがあるので、
-  // まず domcontentloaded で入る。
-  const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  // networkidleは広告・計測通信があると完了しないことがあるため、
+  // まずcommitでレスポンス受信を確認し、その後DOMを一定時間だけ待つ。
+  const resp = await page.goto(url, {
+    // 最初のHTTPレスポンスを受け取った時点で先へ進む。
+    // 広告や計測処理の影響でDOMContentLoadedが遅れるのを避ける。
+    waitUntil: 'commit',
+    timeout: 45_000,
+  });
   const status = resp ? resp.status() : 0;
   if (status && status >= 400) {
     console.error(`[WARN] goto status=${status} url=${url}`);
+  }
+  
+  try {
+    await page.waitForLoadState('domcontentloaded', {
+      timeout: 20_000,
+    });
+  } catch (e) {
+    console.error(
+      '[WARN] waitForLoadState(domcontentloaded) timeout: ' +
+      (e && e.message ? e.message : e)
+    );
+  }
+  
+  // 日経ニュース一覧
+  const isNikkeiNews = /^https:\/\/www\.nikkei\.com\/news\/category\//i.test(url);
+
+  if (isNikkeiNews) {
+    try {
+      await page.waitForSelector(
+        'article time[datetime]',
+        {
+          state: 'attached',
+          timeout: 45_000,
+        }
+      );
+    } catch (e) {
+      console.error(
+        '[WARN] waitForSelector(Nikkei article) timeout: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
   }
   
   // stocksページはDOM生成が遅い時があるので、主要ブロックを少し待つ
@@ -91,19 +149,34 @@ const fs = require('fs');
       // 続行（HTMLは取れる範囲で取る）
     }
   }
-
-  // “通信が落ち着くまで”を短時間だけ追加で待つ（失敗しても無視）
-  try {
-    await page.waitForLoadState('networkidle', { timeout: 8000 });
-  } catch (_) {
-    // ignore
-  }
+  
   // --- ここまで改修ポイント ---
 
   const html = await page.content();
+  const finalUrl = page.url();
+  const title = await page.title();
+
   fs.writeFileSync(out, html);
 
-  console.log(`[OK] saved: ${out} bytes=${html.length}`);
+  const meta = {
+    http_code: status,
+    final_url: finalUrl,
+    title,
+    html_bytes: Buffer.byteLength(html, 'utf8'),
+  };
+
+  fs.writeFileSync(
+    metaOut,
+    JSON.stringify(meta, null, 2),
+    'utf8'
+  );
+
+  console.log(
+    `[OK] saved: ${out} ` +
+    `bytes=${meta.html_bytes} ` +
+    `status=${status} ` +
+    `final_url=${finalUrl}`
+  );
 
   await browser.close();
   clearTimeout(hardTimeout);
