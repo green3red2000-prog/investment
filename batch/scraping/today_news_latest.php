@@ -402,13 +402,26 @@ if (should_run_shikiho_()) {
 if (should_run_jpx_()) {
   echo "[INFO] JPX: start (interval OK)\n";
 
+  /*
+   * 3つの取得元は個別に処理する。
+   * 1つが失敗しても、残りの取得元は続行する。
+   */
+  $jpxSuccessCount = 0;
+
+  // (A) サイト更新情報
   try {
-    // (A) サイト更新情報
     $html = http_get_text_browser(JPX_URL_SITE_UPDATES, [
       'timeout'   => 120,
       'retry_max' => 2,
     ]);
+    
     $items = parse_jpx_site_updates_($html);
+
+    if (count($items) === 0) {
+      throw new RuntimeException(
+        "JPXサイト更新情報のパース結果が0件でした。"
+      );
+    }
 
     $nowHms = (new DateTime('now', new DateTimeZone(TIMEZONE)))->format('H:i:s');
 
@@ -424,12 +437,41 @@ if (should_run_jpx_()) {
       $newRows[] = [$jst, JPX_SOURCE_SITE_UPDATES, $a['title'], $u, $id, ''];
     }
 
-    // (B) マーケットニュース
+    $jpxSuccessCount++;
+
+    echo
+      "[INFO] JPX site updates: success" .
+      " items=" . count($items) . "\n";
+
+  } catch (Throwable $e) {
+    fwrite(
+      STDERR,
+      "[WARN] JPX site updates fetch/parse failed: " .
+      $e->getMessage() .
+      "\n"
+    );
+  }
+
+  // 各JPX取得元で同じ現在時刻を使用する
+  $nowHms = (new DateTime(
+    'now',
+    new DateTimeZone(TIMEZONE)
+  ))->format('H:i:s');
+
+  // (B) マーケットニュース
+  try {
     $html = http_get_text_browser(JPX_URL_MARKET_NEWS, [
       'timeout'   => 120,
       'retry_max' => 2,
     ]);
+    
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
+
+    if (count($items) === 0) {
+      throw new RuntimeException(
+        "JPXマーケットニュースのパース結果が0件でした。"
+      );
+    }
 
     foreach ($items as $a) {
       $u = $a['url'];
@@ -443,12 +485,35 @@ if (should_run_jpx_()) {
       $newRows[] = [$jst, JPX_SOURCE_MARKET_NEWS, $a['title'], $u, $id, ''];
     }
 
-    // (C) お知らせ（news-releases）
+    $jpxSuccessCount++;
+
+    echo
+      "[INFO] JPX market news: success" .
+      " items=" . count($items) . "\n";
+
+  } catch (Throwable $e) {
+    fwrite(
+      STDERR,
+      "[WARN] JPX market news fetch/parse failed: " .
+      $e->getMessage() .
+      "\n"
+    );
+  }
+
+  // (C) お知らせ（news-releases）
+  try {
     $html = http_get_text_browser(JPX_URL_INFO, [
       'timeout'   => 120,
       'retry_max' => 2,
     ]);
+    
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
+
+    if (count($items) === 0) {
+      throw new RuntimeException(
+        "JPXお知らせのパース結果が0件でした。"
+      );
+    }
 
     foreach ($items as $a) {
       $u = $a['url'];
@@ -461,14 +526,46 @@ if (should_run_jpx_()) {
       $id  = make_id16_($jst, $a['title']);
       $newRows[] = [$jst, JPX_SOURCE_INFO, $a['title'], $u, $id, ''];
     }
+    $jpxSuccessCount++;
+
+    echo
+      "[INFO] JPX info: success" .
+      " items=" . count($items) . "\n";
 
   } catch (Throwable $e) {
-    fwrite(STDERR, "[WARN] JPX fetch/parse failed: " . $e->getMessage() . "\n");
-  } finally {
-    // ★ 成功/失敗に関わらず「今回実行した」扱いにして6時間抑制
-    mark_jpx_ran_();
-    echo "[INFO] JPX: marked last_run\n";
+
+    fwrite(
+      STDERR,
+      "[WARN] JPX info fetch/parse failed: " .
+      $e->getMessage() .
+      "\n"
+    );
   }
+
+  /*
+   * 3取得元のうち、少なくとも1つが正常に取得・パースできた場合のみ
+   * 今回実行済みとして6時間抑制する。
+   */
+  if ($jpxSuccessCount > 0) {
+
+    mark_jpx_ran_();
+    
+    echo
+      "[INFO] JPX: marked last_run" .
+      " success={$jpxSuccessCount}/3\n";
+
+  } else {
+    /*
+     * 全取得元が失敗した場合はlast_runを更新しない。
+     * 次回の3分cronで再試行する。
+     */
+    fwrite(
+      STDERR,
+      "[WARN] JPX: all sources failed. " .
+      "last_run was not updated.\n"
+    );
+  }
+  
 } else {
   echo "[INFO] JPX: skipped (interval not reached)\n";
 }
