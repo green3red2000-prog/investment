@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /**
  * 本日のニュース（PHP版）
- * - 日経/ロイター/ブルームバーグ/xTECH をスクレイピング
+ * - 日経/ロイター/ブルームバーグ/xTECH/nikkei225jp.com等をスクレイピング
  * - Google Drive: 投資/プログラミング/GAS/スクレイピング/出力結果/ 本日のニュース_最新 を開く
  * - 末尾に追記（時刻は日付型として入れる = USER_ENTERED）
  * - 追記後、時刻(A列)降順でソート
@@ -18,6 +18,7 @@ declare(strict_types=1);
  *   php /opt/invest/scraping/today_news_latest.php --test=XTECH
  *   php /opt/invest/scraping/today_news_latest.php --test=SHIKIHO
  *   php /opt/invest/scraping/today_news_latest.php --test=JPX
+ *   php /opt/invest/scraping/today_news_latest.php --test=NIKKEI225JP
  *
  * HTMLファイル出力付きテスト:
  *   php /opt/invest/scraping/today_news_latest.php --test=NEWS --fileout
@@ -39,6 +40,7 @@ declare(strict_types=1);
  *
  * ・ロイター
  * 　　毎回取得（1ページ）
+ *     ※現在コメントアウト中
  *
  * ・ブルームバーグ
  * 　　毎回取得（1ページ）
@@ -46,6 +48,9 @@ declare(strict_types=1);
  *
  * ・日経クロステック
  * 　　毎回取得（1ページ）
+ *
+ * ・nikkei225jp.com 経済ニュース
+ * 　　30分以上経過している場合のみ取得（1ページ）
  *
  * ・四季報オンライン
  * 　　6時間以上経過している場合のみ取得（4ページ）
@@ -73,6 +78,7 @@ const NEWS_URL     = 'https://www.nikkei.com/news/category/';
 const REUTERS_URL  = 'https://jp.reuters.com/';
 const BLOOMBERG_URL = 'https://www.bloomberg.com/jp';
 const XTECH_URL    = 'https://xtech.nikkei.com/top/latest.html?i_cid=nbpnxt_navi_com_latest';
+const NIKKEI225JP_URL = 'https://nikkei225jp.com/news/';
 const SHIKIHO_PREFIX = 'https://shikiho.toyokeizai.net';
 const SHIKIHO_URLS = [
   'https://shikiho.toyokeizai.net/news?id=original&page=1&date=&qtext=',
@@ -99,6 +105,10 @@ const JPX_SOURCE_INFO         = 'JPX：お知らせ';
 const TIMEZONE = 'Asia/Tokyo';
 const MAX_PAGE = 10;   // 日経 ?page=1..10
 const SLEEP_BETWEEN_PAGES_US = 2_500_000;
+
+// ==== nikkei225jp.com 実行制御 ====
+const NIKKEI225JP_INTERVAL_SEC = 30 * 60; // 30分
+const NIKKEI225JP_LASTRUN_FILE = '/opt/invest/scraping/state/last_run_nikkei225jp.txt';
 
 // ==== 四季報オンライン 実行制御 ====
 const SHIKIHO_INTERVAL_SEC = 6 * 60 * 60; // 6時間
@@ -302,6 +312,7 @@ for ($page = 1; $page <= MAX_PAGE; $page++) {
 }
 
 // ---- ロイター ----
+/*
 try {
   $html = http_get_text_browser(REUTERS_URL, ['timeout'   => 120,'retry_max' => 3,]);
   $articles = parse_reuters_news_($html);
@@ -319,6 +330,7 @@ try {
 } catch (Throwable $e) {
   fwrite(STDERR, "[WARN] Reuters fetch/parse failed: " . $e->getMessage() . "\n");
 }
+*/
 
 // ---- ブルームバーグ ----
 /*
@@ -358,6 +370,164 @@ try {
 } catch (Throwable $e) {
   fwrite(STDERR, "[WARN] xTECH fetch/parse failed: " . $e->getMessage() . "\n");
 }
+
+// ---- nikkei225jp.com 経済ニュース（30分に1回） ----
+if (should_run_nikkei225jp_()) {
+  echo "[INFO] NIKKEI225JP: start (interval OK)\n";
+
+  try {
+    /*
+     * HTTP 200でも、プロキシによっては記事一覧を含まないHTMLが
+     * 返る場合があるため、HTML取得とパースをまとめて再試行する。
+     */
+    $articles = [];
+    $lastParseError = null;
+    $fetchParseRetryMax = 3;
+
+    for (
+      $fetchParseTry = 1;
+      $fetchParseTry <= $fetchParseRetryMax;
+      $fetchParseTry++
+    ) {
+      try {
+        /*
+         * メタ情報付きで取得し、
+         * 通常起動ログにも使用プロキシ等を出力する。
+         *
+         * 外側で取得＋パースを再試行するため、
+         * 1回ごとのHTTP取得リトライは1回とする。
+         */
+        $response = http_get_text_browser_with_meta(
+          NIKKEI225JP_URL,
+          [
+            'timeout'          => 120,
+            'retry_max'        => 1,
+            'allow_http_error' => false,
+          ]
+        );
+
+        $html = (string)($response['html'] ?? '');
+        $httpCode = (int)($response['http_code'] ?? 0);
+        $proxy = (string)($response['proxy'] ?? '');
+        $pageTitle = (string)($response['title'] ?? '');
+        $htmlSizeKb = (int)round(strlen($html) / 1024);
+
+        $articles = parse_nikkei225jp_news_($html);
+        $articleCount = count($articles);
+
+        echo
+          "[INFO] NIKKEI225JP attempt " .
+          "{$fetchParseTry}/{$fetchParseRetryMax}: " .
+          "proxy={$proxy} " .
+          "http={$httpCode} " .
+          "title={$pageTitle} " .
+          "html={$htmlSizeKb}KB " .
+          "articles={$articleCount}\n";
+
+        if ($articleCount === 0) {
+          throw new RuntimeException(
+            'nikkei225jp.comのパース結果が0件でした。'
+          );
+        }
+
+        /*
+         * 1件以上パースできたため成功。
+         */
+        $lastParseError = null;
+        break;
+
+      } catch (Throwable $e) {
+        $lastParseError = $e;
+
+        fwrite(
+          STDERR,
+          "[WARN] NIKKEI225JP attempt " .
+          "{$fetchParseTry}/{$fetchParseRetryMax} failed: " .
+          $e->getMessage() .
+          "\n"
+        );
+
+        if ($fetchParseTry >= $fetchParseRetryMax) {
+          break;
+        }
+
+        /*
+         * 通常起動はhttp_session_begin(false)なので、
+         * 次の取得では別のプロキシがランダム選択される。
+         */
+        usleep(1_200_000);
+      }
+    }
+
+    if (count($articles) === 0) {
+      throw new RuntimeException(
+        'nikkei225jp.comの取得・パースが' .
+        "{$fetchParseRetryMax}回すべて失敗しました。" .
+        (
+          $lastParseError !== null
+            ? ' 最終エラー: ' . $lastParseError->getMessage()
+            : ''
+        )
+      );
+    }
+
+    $newCount = 0;
+
+    foreach ($articles as $a) {
+      $u = $a['url'];
+
+      if (isset($existingUrls[$u])) {
+        continue;
+      }
+
+      $existingUrls[$u] = true;
+
+      $jst = $a['datetime'];
+      $id  = make_id16_($jst, $a['title']);
+
+      $newRows[] = [
+        $jst,
+        $a['source'],
+        $a['title'],
+        $u,
+        $id,
+        '',
+      ];
+
+      $newCount++;
+    }
+
+    /*
+     * HTML取得とパースに成功した場合のみ、
+     * 次回取得を30分後まで抑制する。
+     */
+    mark_nikkei225jp_ran_();
+
+    echo
+      '[INFO] NIKKEI225JP: success' .
+      ' articles=' . count($articles) .
+      ' new=' . $newCount .
+      "\n";
+
+    echo "[INFO] NIKKEI225JP: marked last_run\n";
+
+  } catch (Throwable $e) {
+    /*
+     * 失敗時はlast_runを更新しないため、
+     * 次の3分cronで再試行される。
+     */
+    fwrite(
+      STDERR,
+      '[WARN] NIKKEI225JP fetch/parse failed: ' .
+      $e->getMessage() .
+      "\n"
+    );
+  }
+
+} else {
+  echo "[INFO] NIKKEI225JP: skipped (interval not reached)\n";
+}
+
 
 // ---- 四季報オンライン（6時間に1回） ----
 if (should_run_shikiho_()) {
@@ -410,10 +580,33 @@ if (should_run_jpx_()) {
 
   // (A) サイト更新情報
   try {
-    $html = http_get_text_browser(JPX_URL_SITE_UPDATES, [
-      'timeout'   => 120,
-      'retry_max' => 2,
-    ]);
+
+    $response = http_get_text_browser_with_meta(
+      JPX_URL_SITE_UPDATES,
+      [
+        'timeout'          => 120,
+        'retry_max'        => 2,
+        'allow_http_error' => true,
+      ]
+    );
+
+    $html = (string)($response['html'] ?? '');
+    $httpCode = (int)($response['http_code'] ?? 0);
+    $proxy = (string)($response['proxy'] ?? '');
+    $pageTitle = (string)($response['title'] ?? '');
+    $htmlSizeKb = (int)round(strlen($html) / 1024);
+
+    if ($httpCode !== 200) {
+      throw new RuntimeException(
+        "HTTPレスポンスコードが200ではありません: {$httpCode}"
+      );
+    }
+
+    if ($html === '') {
+      throw new RuntimeException(
+        '取得したHTMLが空です。'
+      );
+    }
     
     $items = parse_jpx_site_updates_($html);
 
@@ -422,6 +615,15 @@ if (should_run_jpx_()) {
         "JPXサイト更新情報のパース結果が0件でした。"
       );
     }
+
+    echo
+      "[INFO] JPX site updates fetch: " .
+      "proxy={$proxy} " .
+      "http={$httpCode} " .
+      "title={$pageTitle} " .
+      "html={$htmlSizeKb}KB " .
+      "items=" . count($items) .
+      "\n";
 
     $nowHms = (new DateTime('now', new DateTimeZone(TIMEZONE)))->format('H:i:s');
 
@@ -439,9 +641,7 @@ if (should_run_jpx_()) {
 
     $jpxSuccessCount++;
 
-    echo
-      "[INFO] JPX site updates: success" .
-      " items=" . count($items) . "\n";
+    echo "[INFO] JPX site updates: success\n";
 
   } catch (Throwable $e) {
     fwrite(
@@ -460,10 +660,33 @@ if (should_run_jpx_()) {
 
   // (B) マーケットニュース
   try {
-    $html = http_get_text_browser(JPX_URL_MARKET_NEWS, [
-      'timeout'   => 120,
-      'retry_max' => 2,
-    ]);
+
+    $response = http_get_text_browser_with_meta(
+      JPX_URL_MARKET_NEWS,
+      [
+        'timeout'          => 120,
+        'retry_max'        => 2,
+        'allow_http_error' => true,
+      ]
+    );
+
+    $html = (string)($response['html'] ?? '');
+    $httpCode = (int)($response['http_code'] ?? 0);
+    $proxy = (string)($response['proxy'] ?? '');
+    $pageTitle = (string)($response['title'] ?? '');
+    $htmlSizeKb = (int)round(strlen($html) / 1024);
+
+    if ($httpCode !== 200) {
+      throw new RuntimeException(
+        "HTTPレスポンスコードが200ではありません: {$httpCode}"
+      );
+    }
+
+    if ($html === '') {
+      throw new RuntimeException(
+        '取得したHTMLが空です。'
+      );
+    }
     
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
 
@@ -472,6 +695,15 @@ if (should_run_jpx_()) {
         "JPXマーケットニュースのパース結果が0件でした。"
       );
     }
+
+    echo
+      "[INFO] JPX market news fetch: " .
+      "proxy={$proxy} " .
+      "http={$httpCode} " .
+      "title={$pageTitle} " .
+      "html={$htmlSizeKb}KB " .
+      "items=" . count($items) .
+      "\n";
 
     foreach ($items as $a) {
       $u = $a['url'];
@@ -487,9 +719,7 @@ if (should_run_jpx_()) {
 
     $jpxSuccessCount++;
 
-    echo
-      "[INFO] JPX market news: success" .
-      " items=" . count($items) . "\n";
+    echo "[INFO] JPX market news: success\n";
 
   } catch (Throwable $e) {
     fwrite(
@@ -502,10 +732,33 @@ if (should_run_jpx_()) {
 
   // (C) お知らせ（news-releases）
   try {
-    $html = http_get_text_browser(JPX_URL_INFO, [
-      'timeout'   => 120,
-      'retry_max' => 2,
-    ]);
+    
+    $response = http_get_text_browser_with_meta(
+      JPX_URL_INFO,
+      [
+        'timeout'          => 120,
+        'retry_max'        => 2,
+        'allow_http_error' => true,
+      ]
+    );
+
+    $html = (string)($response['html'] ?? '');
+    $httpCode = (int)($response['http_code'] ?? 0);
+    $proxy = (string)($response['proxy'] ?? '');
+    $pageTitle = (string)($response['title'] ?? '');
+    $htmlSizeKb = (int)round(strlen($html) / 1024);
+
+    if ($httpCode !== 200) {
+      throw new RuntimeException(
+        "HTTPレスポンスコードが200ではありません: {$httpCode}"
+      );
+    }
+
+    if ($html === '') {
+      throw new RuntimeException(
+        '取得したHTMLが空です。'
+      );
+    }    
     
     $items = parse_jpx_list_common_($html, 'JPX-news-list-date', 'JPX-news-list-title');
 
@@ -514,6 +767,15 @@ if (should_run_jpx_()) {
         "JPXお知らせのパース結果が0件でした。"
       );
     }
+
+    echo
+      "[INFO] JPX info fetch: " .
+      "proxy={$proxy} " .
+      "http={$httpCode} " .
+      "title={$pageTitle} " .
+      "html={$htmlSizeKb}KB " .
+      "items=" . count($items) .
+      "\n";
 
     foreach ($items as $a) {
       $u = $a['url'];
@@ -528,9 +790,7 @@ if (should_run_jpx_()) {
     }
     $jpxSuccessCount++;
 
-    echo
-      "[INFO] JPX info: success" .
-      " items=" . count($items) . "\n";
+    echo "[INFO] JPX info: success\n";
 
   } catch (Throwable $e) {
 
@@ -630,6 +890,15 @@ function run_test_mode_(string $target, bool $fileout): void {
       'source' => SOURCE_NAME_XTECH,
       'parser' => 'parse_xtech_news_',
     ],
+    'NIKKEI225JP' => [
+      'url'    => NIKKEI225JP_URL,
+      /*
+       * 配信元は記事ごとに異なるため、
+       * parse_nikkei225jp_news_()のsourceを使用する。
+       */
+      'source' => '',
+      'parser' => 'parse_nikkei225jp_news_',
+    ],
     'SHIKIHO' => [
       // 四季報はSHIKIHO_URLSの先頭だけをテストする
       'url'    => SHIKIHO_URLS[0],
@@ -647,7 +916,7 @@ function run_test_mode_(string $target, bool $fileout): void {
   if (!isset($targets[$target])) {
     throw new InvalidArgumentException(
       "不正な --test の値です: {$target}\n" .
-      "指定可能値: NEWS, REUTERS, BLOOMBERG, XTECH, SHIKIHO, JPX"
+      "指定可能値: NEWS, REUTERS, BLOOMBERG, XTECH, NIKKEI225JP, SHIKIHO, JPX"
     );
   }
 
@@ -756,6 +1025,14 @@ function run_test_mode_(string $target, bool $fileout): void {
         // 通常処理と同様、取得時点の現在時刻を使用する
         $time = $nowJst;
         break;
+        
+      case 'NIKKEI225JP':
+        /*
+         * パーサー側で
+         * yyyy-MM-dd HH:mm:ssへ変換済み。
+         */
+        $time = (string)$article['datetime'];
+        break;
 
       case 'SHIKIHO':
         $time = shikiho_mdhi_to_jst_string_(
@@ -778,7 +1055,15 @@ function run_test_mode_(string $target, bool $fileout): void {
 
     $title = trim((string)($article['title'] ?? ''));
 
-    echo "{$time}\t{$source}\t{$title}\n";
+    /*
+     * 記事データにsourceがあればそれを優先する。
+     * nikkei225jp.comは記事ごとに配信元が異なる。
+     */
+    $articleSource = trim(
+      (string)($article['source'] ?? $source)
+    );
+
+    echo "{$time}\t{$articleSource}\t{$title}\n";
   }
 
   echo "----------------------------------------\n";
@@ -1052,6 +1337,261 @@ function parse_xtech_news_(string $html): array {
   return $results;
 }
 
+/**
+ * nikkei225jp.comの経済ニュース一覧を解析する。
+ *
+ * 戻り値:
+ * [
+ *   [
+ *     'datetime' => '2026-08-02 09:08:00',
+ *     'source'   => 'CRYPTO TIMES',
+ *     'title'    => '記事見出し',
+ *     'url'      => 'https://元記事URL',
+ *   ],
+ * ]
+ */
+function parse_nikkei225jp_news_(string $html): array {
+  $results = [];
+
+  libxml_use_internal_errors(true);
+
+  $dom = new DOMDocument();
+  $loaded = $dom->loadHTML(
+    '<?xml encoding="UTF-8">' . $html,
+    LIBXML_NOWARNING | LIBXML_NOERROR
+  );
+
+  libxml_clear_errors();
+
+  if (!$loaded) {
+    return $results;
+  }
+
+  $xp = new DOMXPath($dom);
+
+  /*
+   * classにNtexを含むdivを記事単位として取得する。
+   */
+  $nodes = $xp->query(
+    "//div[" .
+    "contains(" .
+    "concat(' ', normalize-space(@class), ' ')," .
+    "' Ntex '" .
+    ")" .
+    "]"
+  );
+
+  if (!$nodes) {
+    return $results;
+  }
+
+  foreach ($nodes as $node) {
+    /*
+     * 見出しリンク
+     */
+    $aNodes = $xp->query('.//a[@href]', $node);
+
+    if (!$aNodes || $aNodes->length === 0) {
+      continue;
+    }
+
+    $a = $aNodes->item(0);
+
+    if (!$a instanceof DOMElement) {
+      continue;
+    }
+
+    $href = trim(
+      html_entity_decode(
+        (string)$a->getAttribute('href'),
+        ENT_QUOTES | ENT_HTML5,
+        'UTF-8'
+      )
+    );
+
+    if ($href === '') {
+      continue;
+    }
+
+    /*
+     * 見出しはa要素の表示文字列を使用する。
+     * title属性末尾の[配信元]は含めない。
+     */
+    $title = normalize_ws_(
+      html_entity_decode(
+        (string)$a->textContent,
+        ENT_QUOTES | ENT_HTML5,
+        'UTF-8'
+      )
+    );
+
+    if ($title === '') {
+      continue;
+    }
+
+    /*
+     * 配信元
+     * 例：<span class="vn"> CRYPTO TIMES</span>
+     */
+    $source = '';
+
+    $sourceNodes = $xp->query(
+      ".//span[" .
+      "contains(" .
+      "concat(' ', normalize-space(@class), ' ')," .
+      "' vn '" .
+      ")" .
+      "]",
+      $node
+    );
+
+    if ($sourceNodes && $sourceNodes->length > 0) {
+      $source = normalize_ws_(
+        (string)$sourceNodes->item(0)->textContent
+      );
+    }
+
+    if ($source === '') {
+      $source = 'nikkei225jp.com';
+    }
+
+    /*
+     * title属性の先頭から日時を取得する。
+     * 例：
+     * 2026/08/02 09:08 記事見出し [CRYPTO TIMES]
+     */
+    $titleAttr = normalize_ws_(
+      html_entity_decode(
+        (string)$a->getAttribute('title'),
+        ENT_QUOTES | ENT_HTML5,
+        'UTF-8'
+      )
+    );
+
+    if (
+      !preg_match(
+        '/^(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2})/',
+        $titleAttr,
+        $dateMatch
+      )
+    ) {
+      continue;
+    }
+
+    $dt = DateTime::createFromFormat(
+      '!Y/m/d H:i',
+      $dateMatch[1],
+      new DateTimeZone(TIMEZONE)
+    );
+
+    if ($dt === false) {
+      continue;
+    }
+
+    $datetime = $dt->format('Y-m-d H:i:s');
+
+    /*
+     * jump.nikkei225jp.comのURLパラメータから
+     * 元記事URLを取り出す。
+     */
+    $directUrl = extract_nikkei225jp_direct_url_($href);
+
+    if ($directUrl === '') {
+      continue;
+    }
+
+    $results[] = [
+      'datetime' => $datetime,
+      'source'   => $source,
+      'title'    => $title,
+      'url'      => $directUrl,
+    ];
+  }
+
+  return $results;
+}
+
+/**
+ * nikkei225jp.comのジャンプURLから直接URLを取得する。
+ *
+ * 例：
+ * //jump.nikkei225jp.com/j.php?URL=https%3A%2F%2Fexample.com
+ * ↓
+ * https://example.com
+ */
+function extract_nikkei225jp_direct_url_(string $href): string {
+  $href = trim(
+    html_entity_decode(
+      $href,
+      ENT_QUOTES | ENT_HTML5,
+      'UTF-8'
+    )
+  );
+
+  if ($href === '') {
+    return '';
+  }
+
+  /*
+   * プロトコル相対URLにも対応する。
+   */
+  if (strpos($href, '//') === 0) {
+    $href = 'https:' . $href;
+  }
+
+  $parts = parse_url($href);
+
+  if ($parts === false) {
+    return '';
+  }
+
+  $host = strtolower((string)($parts['host'] ?? ''));
+
+  /*
+   * ジャンプURLでない場合は、直接URLとしてそのまま使う。
+   */
+  if ($host !== 'jump.nikkei225jp.com') {
+    return preg_match('#^https?://#i', $href)
+      ? $href
+      : '';
+  }
+
+  $query = (string)($parts['query'] ?? '');
+
+  if ($query === '') {
+    return '';
+  }
+
+  $params = [];
+  parse_str($query, $params);
+
+  $directUrl = trim((string)($params['URL'] ?? ''));
+
+  /*
+   * parse_str()で通常はデコード済みだが、
+   * 二重エンコードにもある程度対応する。
+   */
+  for ($i = 0; $i < 2; $i++) {
+    if (!preg_match('/%[0-9A-Fa-f]{2}/', $directUrl)) {
+      break;
+    }
+
+    $decoded = rawurldecode($directUrl);
+
+    if ($decoded === $directUrl) {
+      break;
+    }
+
+    $directUrl = $decoded;
+  }
+
+  if (!preg_match('#^https?://#i', $directUrl)) {
+    return '';
+  }
+
+  return $directUrl;
+}
+
 function normalize_ws_(string $s): string {
   $s = preg_replace('/[ \t\r\n]+/u', ' ', $s);
   return trim($s ?? '');
@@ -1183,6 +1723,33 @@ function mark_shikiho_ran_(): void {
   ensure_dir(dirname(SHIKIHO_LASTRUN_FILE));
   file_put_contents(SHIKIHO_LASTRUN_FILE, (string)time());
 }
+
+function should_run_nikkei225jp_(): bool {
+  if (!file_exists(NIKKEI225JP_LASTRUN_FILE)) {
+    return true;
+  }
+
+  $last = (int)trim(
+    (string)file_get_contents(NIKKEI225JP_LASTRUN_FILE)
+  );
+
+  if ($last <= 0) {
+    return true;
+  }
+
+  return
+    (time() - $last) >= NIKKEI225JP_INTERVAL_SEC;
+}
+
+function mark_nikkei225jp_ran_(): void {
+  ensure_dir(dirname(NIKKEI225JP_LASTRUN_FILE));
+
+  file_put_contents(
+    NIKKEI225JP_LASTRUN_FILE,
+    (string)time()
+  );
+}
+
 
 /**
  * $timeStr(yyyy-MM-dd HH:mm:ss) が「現在(JST)から $days 日より古い」なら true
