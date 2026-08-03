@@ -199,6 +199,8 @@ if ($mode === 'api') {
   //   blue=PBR,yield,116
   $redTargets = parseHighlightTargets((string)($_GET['red'] ?? ''));
   $blueTargets = parseHighlightTargets((string)($_GET['blue'] ?? ''));
+  $yellowTargets = parseHighlightTargets((string)($_GET['yellow'] ?? ''));
+  $greenTargets  = parseHighlightTargets((string)($_GET['green'] ?? ''));
 
   if (preg_match('/^[0-9A-Za-z]{4}$/', $text)) {
     try {
@@ -208,14 +210,18 @@ if ($mode === 'api') {
         'basic',
         $code4,
         $redTargets,
-        $blueTargets
+        $blueTargets,
+        $yellowTargets,
+        $greenTargets
       );
 
       $daily = fetchMasterRowByCode_sqlite(
         'daily',
         $code4,
         $redTargets,
-        $blueTargets
+        $blueTargets,
+        $yellowTargets,
+        $greenTargets
       );
       
       header('Content-Type: text/html; charset=UTF-8');
@@ -247,7 +253,7 @@ exit;
  * kind: basic|daily
  * @return array{meta:string, rowsHtml:string, companyName?:string, debug?:string}
  */
-function fetchMasterRowByCode_sqlite(string $kind,string $code4,array $redTargets = [], array $blueTargets = []): array {
+function fetchMasterRowByCode_sqlite(string $kind,string $code4,array $redTargets = [], array $blueTargets = [], array $yellowTargets = [], array $greenTargets = []): array {
   $kind = strtolower($kind);
   if ($kind !== 'basic' && $kind !== 'daily') {
     throw new InvalidArgumentException("invalid kind: {$kind}");
@@ -287,7 +293,7 @@ function fetchMasterRowByCode_sqlite(string $kind,string $code4,array $redTarget
 
   return [
     'meta' => $meta . " / 証券コード={$codeKey}",
-    'rowsHtml' => buildVerticalRowsHtml($headers,$cells,$kind,$redTargets,$blueTargets),
+    'rowsHtml' => buildVerticalRowsHtml($headers,$cells,$kind,$redTargets,$blueTargets,$yellowTargets,$greenTargets),
     'companyName' => $company,
     'debug' => '',
   ];
@@ -542,7 +548,7 @@ function normalizeCode4($x): string {
 }
 
 /**
- * red / blue パラメータをカンマ区切りで解析する。
+ * red / blue / yellow / green パラメータをカンマ区切りで解析する。
  *
  * 例:
  *   PER,46,134
@@ -585,13 +591,16 @@ function parseHighlightTargets(string $raw): array {
 /**
  * 指定された見出しの値セルに適用する背景色を返す。
  *
- * red と blue の両方に同じ項目が指定された場合は red を優先する。
+ * 同じ項目が複数色に指定された場合は、
+ * red → blue → yellow → green の順で優先する。
  */
 function resolveHighlightColor(
   string $kind,
   string $headerName,
   array $redTargets,
-  array $blueTargets
+  array $blueTargets,
+  array $yellowTargets,
+  array $greenTargets
 ): string {
   $targetKey = resolveHighlightTargetKey($kind, $headerName);
 
@@ -599,13 +608,21 @@ function resolveHighlightColor(
     return '';
   }
 
-  // 同じ項目が両方に指定された場合は red を優先
+  // 優先順位
   if (isset($redTargets[$targetKey])) {
     return '#FFBBC2';
   }
 
   if (isset($blueTargets[$targetKey])) {
     return '#C1C9FF';
+  }
+
+  if (isset($yellowTargets[$targetKey])) {
+    return '#FFF3B0';
+  }
+
+  if (isset($greenTargets[$targetKey])) {
+    return '#C9F7C5';
   }
 
   return '';
@@ -615,7 +632,9 @@ function buildVerticalRowsHtml(
   array $row,
   string $kind = '',
   array $redTargets = [],
-  array $blueTargets = []
+  array $blueTargets = [],
+  array $yellowTargets = [],
+  array $greenTargets = []
 ): string {
   $out = [];
   $n = count($headers);
@@ -630,7 +649,9 @@ function buildVerticalRowsHtml(
       $kind,
       $hname,
       $redTargets,
-      $blueTargets
+      $blueTargets,
+      $yellowTargets,
+      $greenTargets
     );
 
     $cellStyle = '';
@@ -652,7 +673,7 @@ function buildVerticalRowsHtml(
     : '<tr><td>（表示項目なし）</td></tr>';
 }
 /**
- * マスタの見出しから、red / blue パラメータと照合するキーを取得する。
+ * マスタの見出しから、 red / blue / yellow / green パラメータと照合するキーを取得する。
  *
  * basic:
  *   PER      → PER
