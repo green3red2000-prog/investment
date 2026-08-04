@@ -367,8 +367,7 @@ function processSheet_(
         debugStats.buildDateBlank += 1;
 
         if (
-          isInRange_(minutes, 0, 0, 8, 59) ||
-          isInRange_(minutes, 15, 30, 23, 59)
+          isInRange_(minutes, 0, 0, 8, 59)
         ) {
           setRowValue_(
             row,
@@ -386,6 +385,17 @@ function processSheet_(
             '建て日',
             '終値'
           );
+
+        } else if (
+          isInRange_(minutes, 15, 30, 23, 59)
+        ) {
+          setRowValue_(
+            row,
+            col,
+            '建て日',
+            '翌始値'
+          );
+
         }
 
         // 空白だった回では建値確定をしない
@@ -490,6 +500,50 @@ function processSheet_(
         // 同じ行内で日付処理へ進む
         buildDateCell = procDateObj;
         buildDateStr = procDateObj;
+      }
+      
+      /*
+       * 建て日が「翌始値」
+       */
+      else if (buildDateStr === '翌始値') {
+        if (
+          isInRange_(minutes, 0, 0, 15, 29)
+        ) {
+          setRowValue_(
+            row,
+            col,
+            '建て日',
+            '始値'
+          );
+        }
+
+        /*
+         * この回では建値を確定しない。
+         * 次回以降、「始値」として処理する。
+         */
+        continue;
+      }
+
+      /*
+       * 建て日が「翌終値」
+       */
+      else if (buildDateStr === '翌終値') {
+        if (
+          isInRange_(minutes, 0, 0, 15, 29)
+        ) {
+          setRowValue_(
+            row,
+            col,
+            '建て日',
+            '終値'
+          );
+        }
+
+        /*
+         * この回では建値を確定しない。
+         * 次回以降、「終値」として処理する。
+         */
+        continue;
       }
 
       /*
