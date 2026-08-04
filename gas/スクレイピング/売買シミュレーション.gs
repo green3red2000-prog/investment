@@ -27,6 +27,11 @@ function runSimulation_TEST() {
   runSimulation_('2026-07-29', '23:45');
 }
 
+/**
+ * 確定損益が入力済みの行に設定する背景色
+ */
+const CONFIRMED_ROW_BACKGROUND_ = '#E7E6E6';
+
 function runSimulation_(processDateISO /* optional: 'yyyy-MM-dd' */,
                        fakeNowHHmm    /* optional: 'HH:mm' */) {
   const TZ = 'Asia/Tokyo';
@@ -53,11 +58,23 @@ function runSimulation_(processDateISO /* optional: 'yyyy-MM-dd' */,
   const file = getSpreadsheetFileFromMyDrive_('投資', '売買シミュレーション');
   if (!file) throw new Error('「投資/売買シミュレーション」のスプレッドシートが見つかりません。');
 
-  // 全銘柄日足分析マスタ（当日分のみ）を読み込み
-  const masterMap = loadZenmeigaraNisshiMasterTodayMap_(procISO, TZ);
+  // 全銘柄日足分析マスタを1回だけ読み込み、
+  // 当日株価情報と全分析項目を作成する
+  const analysisMasterMaps =
+    loadZenmeigaraNisshiMasterMaps_(
+      procISO,
+      TZ
+    );
+
+  const masterMap =
+    analysisMasterMaps.todayPriceMap;
+
+  const analysisInfoMap =
+    analysisMasterMaps.analysisInfoMap;
 
   // 全銘柄基本情報マスタを読み込み
-  const basicInfoMap = loadZenmeigaraBasicInfoMasterMap_();
+  const basicInfoMap =
+    loadZenmeigaraBasicInfoMasterMap_();
 
   const ss = SpreadsheetApp.open(file);
   const sheets = ss.getSheets();
@@ -74,6 +91,7 @@ function runSimulation_(processDateISO /* optional: 'yyyy-MM-dd' */,
       processedForMail,
       masterMap,
       basicInfoMap,
+      analysisInfoMap,
       debugStats
     );
   }
@@ -125,6 +143,7 @@ function processSheet_(
   processedForMail,
   masterMap,
   basicInfoMap,
+  analysisInfoMap,
   debugStats
 ) {
   const lastRow = sheet.getLastRow();
@@ -164,6 +183,7 @@ function processSheet_(
 
   const values = dataRange.getValues();
   const formulas = dataRange.getFormulas();
+  const backgrounds = dataRange.getBackgrounds();
 
   let rowsCount = 0;
 
@@ -179,6 +199,7 @@ function processSheet_(
   for (let i = 0; i < values.length; i++) {
     const row = values[i];
     const formulaRow = formulas[i];
+    const backgroundRow = backgrounds[i];
 
     const code = normalizeCode_(
       getRowValue_(row, col, '証券コード')
@@ -189,6 +210,21 @@ function processSheet_(
 
     rowsCount++;
     debugStats.rowsScanned += 1;
+
+    /*
+     * 「全銘」のリンク・シグナル背景色
+     *
+     * 停止行についても更新するため、
+     * 停止チェックより前に実行する。
+     */
+    writeMasterViewToRow_(
+      formulaRow,
+      backgroundRow,
+      col,
+      code,
+      basicInfoMap,
+      analysisInfoMap
+    );
 
     /*
      * (1) 停止チェック
@@ -205,7 +241,7 @@ function processSheet_(
     }
 
     /*
-     * (2) 参考項目
+     * (2) 「全銘」以外の参考項目
      */
     writeReferenceItemsToRow_(
       row,
@@ -584,6 +620,18 @@ function processSheet_(
   }
 
   /*
+   * 全行の値更新終了後、最終的な「確定損益」の値を基に
+   * 確定済み行の背景色を設定する。
+   */
+  for (let i = 0; i < rowsCount; i++) {
+    applyConfirmedRowBackground_(
+      values[i],
+      backgrounds[i],
+      col
+    );
+  }
+
+  /*
    * 処理結果を列単位で一括書き込み
    */
   writeProcessedColumnsBatch_(
@@ -592,7 +640,8 @@ function processSheet_(
     rowsCount,
     col,
     values,
-    formulas
+    formulas,
+    backgrounds
   );
 
   /*
@@ -826,50 +875,200 @@ function writeSummary_(sheet, summary) {
 
 /* ====== 全銘柄日足分析マスタ読み取り ====== */
 /**
- * 「投資/プログラミング/GAS/マスタ/全銘柄日足分析マスタ」を開き、
- *  - 「証券コード」が一致する行を特定し
- *  - 「(0)直近の日付」が procISO と一致する行だけを採用
- * して code -> {open, close} を返す
+ * 全銘柄日足分析マスタを一度だけ読み込み、
  *
- * 想定ヘッダ：
- *  - 証券コード
- *  - (0)直近の日付
- *  - (1)直近の始値
- *  - (4)直近の終値
+ * ・処理日当日の始値・終値
+ * ・ライブラリ判定に使用する全分析項目
+ *
+ * の両方を返す。
  */
-function loadZenmeigaraNisshiMasterTodayMap_(procISO, TZ) {
-  const file = getFileFromMyDrivePath_(['投資','プログラミング','GAS','マスタ'], '全銘柄日足分析マスタ');
-  if (!file) throw new Error('「投資/プログラミング/GAS/マスタ/全銘柄日足分析マスタ」が見つかりません。');
+function loadZenmeigaraNisshiMasterMaps_(
+  procISO,
+  TZ
+) {
+  const file = getFileFromMyDrivePath_(
+    [
+      '投資',
+      'プログラミング',
+      'GAS',
+      'マスタ'
+    ],
+    '全銘柄日足分析マスタ'
+  );
+
+  if (!file) {
+    throw new Error(
+      '「投資/プログラミング/GAS/マスタ/全銘柄日足分析マスタ」が見つかりません。'
+    );
+  }
 
   const ss = SpreadsheetApp.open(file);
-  const sheet = ss.getSheets()[0]; // 先頭シート
+  const sheet = ss.getSheets()[0];
+
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
-  if (lastRow < 2 || lastCol < 1) return {};
 
-  const header = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v).trim());
-  // ★ 日付比較は「更新日」ではなく「(0)直近の日付」を使う
-  const col = colIndexMap_(header, ['証券コード','(0)直近の日付','(1)直近の始値','(4)直近の終値']);
-  if (col['証券コード'] === undefined || col['(0)直近の日付'] === undefined) return {};
-
-  const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-
-  const map = {}; // code -> {open, close}
-  for (let i = 0; i < values.length; i++) {
-    const row = values[i];
-    const code = normalizeCode_(row[col['証券コード'] - 1]);
-    if (!code) continue;
-
-    const nearISO = toISODateString_(row[col['(0)直近の日付'] - 1], TZ);
-    // ★ 「(0)直近の日付」が処理日と一致する行のみ採用
-    if (nearISO !== procISO) continue;
-
-    const open  = (col['(1)直近の始値'] !== undefined) ? toNumberOrNull_(row[col['(1)直近の始値'] - 1]) : null;
-    const close = (col['(4)直近の終値'] !== undefined) ? toNumberOrNull_(row[col['(4)直近の終値'] - 1]) : null;
-
-    map[code] = { open, close };
+  if (lastRow < 2 || lastCol < 1) {
+    return {
+      todayPriceMap: {},
+      analysisInfoMap: {}
+    };
   }
-  return map;
+
+  const header = sheet
+    .getRange(
+      1,
+      1,
+      1,
+      lastCol
+    )
+    .getValues()[0]
+    .map(value =>
+      String(value).trim()
+    );
+
+  const col = colIndexMap_(
+    header,
+    [
+      '証券コード',
+      '(0)直近の日付',
+      '(1)直近の始値',
+      '(4)直近の終値'
+    ]
+  );
+
+  if (col['証券コード'] === undefined) {
+    return {
+      todayPriceMap: {},
+      analysisInfoMap: {}
+    };
+  }
+
+  const values = sheet
+    .getRange(
+      2,
+      1,
+      lastRow - 1,
+      lastCol
+    )
+    .getValues();
+
+  /*
+   * 見出し名の先頭にある
+   * 「(数値)」をパラメータとして保持する。
+   */
+  const parameterByColumn = [];
+
+  for (
+    let i = 0;
+    i < header.length;
+    i++
+  ) {
+    const match =
+      header[i].match(/^\((\d+)\)/);
+
+    parameterByColumn[i] =
+      match ? match[1] : null;
+  }
+
+  const todayPriceMap = {};
+  const analysisInfoMap = {};
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+    const row = values[i];
+
+    const code = normalizeCode_(
+      row[col['証券コード'] - 1]
+    );
+
+    if (!code) {
+      continue;
+    }
+
+    const valuesByParam = {};
+
+    for (
+      let c = 0;
+      c < row.length;
+      c++
+    ) {
+      const parameter =
+        parameterByColumn[c];
+
+      if (parameter !== null) {
+        valuesByParam[parameter] =
+          row[c];
+      }
+    }
+
+    /*
+     * ライブラリ判定用。
+     * 日付一致による絞り込みは行わず、
+     * マスタの現在値を使用する。
+     */
+    analysisInfoMap[code] = {
+      valuesByParam: valuesByParam
+    };
+
+    /*
+     * 売買価格処理用。
+     * こちらは処理日と一致する行だけを採用する。
+     */
+    if (
+      col['(0)直近の日付'] ===
+      undefined
+    ) {
+      continue;
+    }
+
+    const nearISO =
+      toISODateString_(
+        row[
+          col['(0)直近の日付'] - 1
+        ],
+        TZ
+      );
+
+    if (nearISO !== procISO) {
+      continue;
+    }
+
+    const open =
+      col['(1)直近の始値'] !==
+      undefined
+        ? toNumberOrNull_(
+            row[
+              col['(1)直近の始値'] -
+              1
+            ]
+          )
+        : null;
+
+    const close =
+      col['(4)直近の終値'] !==
+      undefined
+        ? toNumberOrNull_(
+            row[
+              col['(4)直近の終値'] -
+              1
+            ]
+          )
+        : null;
+
+    todayPriceMap[code] = {
+      open: open,
+      close: close
+    };
+  }
+
+  return {
+    todayPriceMap: todayPriceMap,
+    analysisInfoMap: analysisInfoMap
+  };
 }
 
 /* ====== 全銘柄基本情報マスタ読み取り ====== */
@@ -917,6 +1116,7 @@ function loadZenmeigaraBasicInfoMasterMap_() {
     'PER',
     'PBR',
     '利回り',
+    '騰落率',
     '信用倍率',
     '特色',
     '連結事業'
@@ -956,7 +1156,11 @@ function loadZenmeigaraBasicInfoMasterMap_() {
         col['利回り'] !== undefined
           ? row[col['利回り'] - 1]
           : '',
-
+      roc:
+        col['騰落率'] !== undefined
+          ? row[col['騰落率'] - 1]
+          : '',
+      	  
       marginRatio:
         col['信用倍率'] !== undefined
           ? row[col['信用倍率'] - 1]
@@ -970,7 +1174,38 @@ function loadZenmeigaraBasicInfoMasterMap_() {
       consolidatedBusiness:
         col['連結事業'] !== undefined
           ? row[col['連結事業'] - 1]
-          : ''
+          : '',
+          
+          /*
+           * 共通ライブラリへ渡す汎用パラメータマップ
+           */
+      valuesByParam: {
+        PER:
+          col['PER'] !== undefined
+            ? row[col['PER'] - 1]
+            : '',
+
+        PBR:
+          col['PBR'] !== undefined
+            ? row[col['PBR'] - 1]
+            : '',
+
+        YIELD:
+          col['利回り'] !== undefined
+            ? row[col['利回り'] - 1]
+            : '',
+
+        ROC:
+          col['騰落率'] !== undefined
+            ? row[col['騰落率'] - 1]
+            : '',
+
+        LSR:
+          col['信用倍率'] !== undefined
+            ? row[col['信用倍率'] - 1]
+            : ''
+      }
+          
     };
   }
 
@@ -1048,7 +1283,7 @@ function setRowValue_(
 }
 
 /**
- * 参考項目を行配列へ設定する
+ * 「全銘」以外の参考項目を行配列・数式配列へ設定する。
  */
 function writeReferenceItemsToRow_(
   row,
@@ -1084,64 +1319,154 @@ function writeReferenceItemsToRow_(
       `=HYPERLINK("https://monex.ifis.co.jp/index.php?sa=find&ta=e&wd=${encodedCode}&x=0&y=0","銘")`;
   }
 
-  /*
-   * 全銘
-   */
-  if (col['全銘'] !== undefined) {
-    formulaRow[col['全銘'] - 1] =
-      `=HYPERLINK("http://133.18.243.68/api/master_view.php?mode=api&text=${encodedCode}","全")`;
-  }
-
   const key = normalizeCode_(code);
 
-  const info =
+  const basicInfo =
     basicInfoMap
       ? basicInfoMap[key]
       : null;
 
+  /*
+   * 基本情報
+   */
   setRowValue_(
     row,
     col,
     'PER',
-    info ? info.per : ''
+    basicInfo ? basicInfo.per : ''
   );
 
   setRowValue_(
     row,
     col,
     'PBR',
-    info ? info.pbr : ''
+    basicInfo ? basicInfo.pbr : ''
   );
 
   setRowValue_(
     row,
     col,
     '利回り',
-    info ? info.yieldValue : ''
+    basicInfo
+      ? basicInfo.yieldValue
+      : ''
   );
 
   setRowValue_(
     row,
     col,
     '信用倍率',
-    info ? info.marginRatio : ''
+    basicInfo
+      ? basicInfo.marginRatio
+      : ''
   );
 
   setRowValue_(
     row,
     col,
     '特色',
-    info ? info.feature : ''
+    basicInfo
+      ? basicInfo.feature
+      : ''
   );
 
   setRowValue_(
     row,
     col,
     '連結事業',
-    info
-      ? info.consolidatedBusiness
+    basicInfo
+      ? basicInfo.consolidatedBusiness
       : ''
   );
+}
+
+/**
+ * 「全銘」のリンクおよびシグナル背景色を、
+ * 数式配列・背景色配列へ設定する。
+ *
+ * 停止行についても実行する。
+ */
+function writeMasterViewToRow_(
+  formulaRow,
+  backgroundRow,
+  col,
+  code,
+  basicInfoMap,
+  analysisInfoMap
+) {
+  if (col['全銘'] === undefined) {
+    return;
+  }
+
+  const key = normalizeCode_(code);
+
+  const basicInfo =
+    basicInfoMap
+      ? basicInfoMap[key]
+      : null;
+
+  const analysisInfo =
+    analysisInfoMap
+      ? analysisInfoMap[key]
+      : null;
+
+  const masterViewInfo =
+    StockSignal.createMasterViewInfo(
+      code,
+      basicInfo,
+      analysisInfo
+    );
+
+  formulaRow[col['全銘'] - 1] =
+    `=HYPERLINK("${masterViewInfo.url}","全")`;
+
+  /*
+   * シグナル色がない場合は、
+   * 既存の背景色を解除する。
+   */
+  backgroundRow[col['全銘'] - 1] =
+    masterViewInfo.background || null;
+}
+
+/**
+ * 「確定損益」に値がある場合、
+ * 行全体の背景色を薄いグレーにする。
+ *
+ * 0も入力済みの値として扱う。
+ */
+function applyConfirmedRowBackground_(
+  row,
+  backgroundRow,
+  col
+) {
+  if (col['確定損益'] === undefined) {
+    return;
+  }
+
+  const confirmed =
+    getRowValue_(
+      row,
+      col,
+      '確定損益'
+    );
+
+  const hasConfirmedValue =
+    confirmed !== null &&
+    confirmed !== undefined &&
+    String(confirmed).trim() !== '';
+
+  if (!hasConfirmedValue) {
+    return;
+  }
+
+  for (
+    let i = 0;
+    i < backgroundRow.length;
+    i++
+  ) {
+    backgroundRow[i] =
+      CONFIRMED_ROW_BACKGROUND_;
+  }
 }
 
 /**
@@ -1388,12 +1713,13 @@ function writePlusColumnsToRow_(
  * 処理後の値と数式を列単位で一括書き込みする
  */
 function writeProcessedColumnsBatch_(
-  sheet,
-  dataStart,
-  rowsCount,
-  col,
-  values,
-  formulas
+   sheet,
+   dataStart,
+   rowsCount,
+   col,
+   values,
+   formulas,
+   backgrounds
 ) {
   if (rowsCount <= 0) {
     return;
@@ -1528,6 +1854,35 @@ function writeProcessedColumnsBatch_(
       .setFormulas(outputFormulas)
       .setHorizontalAlignment('center');
   }
+  
+  /*
+   * 処理対象行全体の背景色を一括書き込み
+   *
+   * ・未確定行は、一括取得時の既存背景色を維持する
+   * ・「全銘」にはライブラリ判定によるシグナル色を設定する
+   * ・確定損益に値がある行は、行全体を薄いグレーにする
+   */
+  const outputBackgrounds = [];
+
+  for (
+    let r = 0;
+    r < rowsCount;
+    r++
+  ) {
+    outputBackgrounds.push(
+      backgrounds[r].slice()
+    );
+  }
+
+  sheet
+    .getRange(
+      dataStart,
+      1,
+      rowsCount,
+      backgrounds[0].length
+    )
+    .setBackgrounds(outputBackgrounds);
+  
 }
 
 
