@@ -17,6 +17,12 @@ $Port = 9222
 $Profile = 'C:\work\share\development\investment\browser-profile\edge-kabutan'
 $SaveRoot = 'C:\work\share\development\investment\data\kabutan\daily_market_snapshot'
 
+# Target file prefix.
+# Leave blank to download all files allowed by Mode.
+# Available values: 01 through 08.
+# Multiple values are not supported.
+$TargetFile = ''
+
 # Target date override for 02_holding.
 # Leave blank to use today's date.
 # Format: yyyy-MM-dd
@@ -274,11 +280,29 @@ if ($Mode -eq '000') {
   )
 }
 
+# Filter scraping targets by file prefix.
+# Blank: all files allowed by Mode.
+# 01 through 08: files whose names begin with the specified prefix.
+if (-not [string]::IsNullOrWhiteSpace($TargetFile)) {
+  $TargetFile = $TargetFile.Trim()
+
+  if ($TargetFile -notmatch '^0[1-8]$') {
+    throw "invalid TargetFile: $TargetFile. available values are 01 through 08"
+  }
+
+  $Items = @(
+    $Items | Where-Object {
+      $_.File -like "${TargetFile}_*"
+    }
+  )
+}
+
 if ($Items.Count -eq 0) {
-  throw "scraping target not found. mode=$Mode"
+  throw "scraping target not found. mode=$Mode targetFile=$TargetFile"
 }
 
 Write-Host "[INFO] mode=$Mode"
+Write-Host "[INFO] target file=$TargetFile"
 Write-Host "[INFO] target items=$($Items.Count)"
 
 
@@ -594,7 +618,11 @@ function Test-KabutanEarnings {
     [string]$Html
   )
 
-  $RowCount = [regex]::Matches($Html, '<tr[^>]*>[\s\S]*?<time[^>]*datetime="[^"]+"[\s\S]*?</tr>').Count
+  $RowCount = [regex]::Matches(
+    $Html,
+    '<td[^>]*class="[^"]*\bnews_time\b[^"]*"[^>]*>\s*<time[^>]*datetime="[^"]+"'
+  ).Count
+
   Write-Host "[CHECK] earnings row count = $RowCount"
 
   if ($RowCount -lt 1) {
@@ -621,7 +649,7 @@ function Test-ShouldContinueNextPage04Earnings {
 
   Write-Host "[CHECK] target date 04_earnings = $($TargetDate.ToString('yyyy-MM-dd'))"
 
-  $DateMatches = [regex]::Matches($Html, '<time[^>]*datetime="([^"]+)"')
+  $DateMatches = [regex]::Matches($Html,'<td[^>]*class="[^"]*\bnews_time\b[^"]*"[^>]*>\s*<time[^>]*datetime="([^"]+)"')
 
   Write-Host "[CHECK] earnings date count = $($DateMatches.Count)"
 
