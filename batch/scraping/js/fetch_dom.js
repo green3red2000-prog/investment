@@ -148,8 +148,312 @@ const fs = require('fs');
       console.error(`[WARN] waitForSelector(newsList__title) timeout: ${e && e.message ? e.message : e}`);
       // 続行（HTMLは取れる範囲で取る）
     }
-  }
+  }  
   
+  // nikkei225jp.com 東証業種別株価指数
+  // 外部JavaScriptデータのAjax取得後にランキング表が生成されるため、
+  // 値上がり・値下がりランキング各10件と連続行の生成完了を待つ。
+  const isToshoSectorIndex =
+    /^https:\/\/nikkei225jp\.com\/chart\/gyoushu\.php(?:[?#].*)?$/i.test(url);
+
+  if (isToshoSectorIndex) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const rankingTable = document.querySelector('#gyornk');
+          const changeTable = document.querySelector('#gtbl');
+
+          if (!rankingTable || !changeTable) {
+            return false;
+          }
+
+          const rankingCells =
+            rankingTable.querySelectorAll('td.tptd');
+
+          const rankingRows =
+            rankingTable.querySelectorAll('tr.trG');
+
+          const continuousCells =
+            changeTable.querySelectorAll(
+              'tr > th.gn2:first-child ~ td.day2'
+            );
+
+          const updatedText =
+            document.querySelector('#gyornkupdatetime')
+              ?.textContent
+              ?.trim() || '';
+
+          return (
+            rankingCells.length === 2 &&
+            rankingRows.length === 20 &&
+            continuousCells.length === 33 &&
+            updatedText !== ''
+          );
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] gyoushu dynamic DOM ready: ' +
+        'rankingCells=2 rankingRows=20 continuousCells=33'
+      );
+    } catch (e) {
+      console.error(
+        '[WARN] waitForFunction(gyoushu dynamic DOM) timeout: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+  // nikkei225jp.com 日経225バリュエーション
+  //
+  // 当該ページでは、指数ベースと加重平均が同じ表
+  // #datatblへ切り替えて表示される。
+  //
+  // 両方の表を順番に取得し、PHP解析用のJSONを
+  // script#mde_nikkei225_valuation_dataとしてDOMへ追加する。
+  const isNikkei225Valuation =
+    /^https:\/\/nikkei225jp\.com\/data\/per\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isNikkei225Valuation) {
+    try {
+      /*
+       * 初期表示の表が完成するまで待つ。
+       */
+      await page.waitForFunction(
+        () => {
+          const table = document.querySelector('#datatbl');
+
+          if (!table) {
+            return false;
+          }
+
+          const rows = Array.from(
+            table.querySelectorAll('tbody > tr')
+          ).filter(row => row.querySelectorAll('td').length === 11);
+
+          return (
+            rows.length === 60 &&
+            rows.every(row => {
+              const cells = row.querySelectorAll('td');
+
+              return (
+                cells.length === 11 &&
+                (cells[0].textContent || '').trim() !== '' &&
+                (cells[4].textContent || '').trim() !== '' &&
+                (cells[5].textContent || '').trim() !== ''
+              );
+            })
+          );
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      /*
+       * 現在表示されている#datatblから、
+       * 60営業日分の11項目を取得する関数。
+       */
+      const extractValuationRows = async () => {
+        return await page.evaluate(() => {
+          const table = document.querySelector('#datatbl');
+
+          if (!table) {
+            throw new Error(
+              '日経225バリュエーションの表#datatblがありません。'
+            );
+          }
+
+          const tableRows = Array.from(
+            table.querySelectorAll('tbody > tr')
+          ).filter(row => row.querySelectorAll('td').length === 11);
+
+          return tableRows.map((row, index) => {
+            const cells = Array.from(row.querySelectorAll('td'));
+
+            if (cells.length !== 11) {
+              throw new Error(
+                '日経225バリュエーションの列数が11列ではありません。' +
+                ` row=${index + 1} cells=${cells.length}`
+              );
+            }
+
+            const text = cell =>
+              (cell.textContent || '')
+                .replace(/\u00a0/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            return {
+              date: text(cells[0]),
+              nikkei225: text(cells[1]),
+              change: text(cells[2]),
+              prime_volume: text(cells[3]),
+              per: text(cells[4]),
+              pbr: text(cells[5]),
+              eps: text(cells[6]),
+              bps: text(cells[7]),
+              earnings_yield: text(cells[8]),
+              dividend_yield: text(cells[9]),
+              jgb_yield: text(cells[10]),
+            };
+          });
+        });
+      };
+
+      /*
+       * ラジオボタンを切り替え、
+       * ページ側のonclick処理で表を更新する。
+       *
+       * value=0：指数ベース
+       * value=1：加重平均
+       */
+      const selectValuationBasis = async value => {
+        await page.evaluate(selectedValue => {
+          const input = document.querySelector(
+            `input[name="typeT1"][value="${selectedValue}"]`
+          );
+
+          if (!input) {
+            throw new Error(
+              '日経225バリュエーションの切替ボタンがありません: ' +
+              selectedValue
+            );
+          }
+
+          /*
+           * inputはCSSで非表示になっているため、
+           * Playwrightの通常clickではなくDOM上でclickする。
+           */
+          input.click();
+        }, value);
+
+        await page.waitForFunction(
+          selectedValue => {
+            const input = document.querySelector(
+              `input[name="typeT1"][value="${selectedValue}"]`
+            );
+
+            if (!input || !input.checked) {
+              return false;
+            }
+
+            const table = document.querySelector('#datatbl');
+
+            if (!table) {
+              return false;
+            }
+
+            const rows = Array.from(
+              table.querySelectorAll('tbody > tr')
+            ).filter(row => row.querySelectorAll('td').length === 11);
+
+            return (
+              rows.length === 60 &&
+              rows.every(row => {
+                const cells = row.querySelectorAll('td');
+
+                return (
+                  cells.length === 11 &&
+                  (cells[0].textContent || '').trim() !== '' &&
+                  (cells[4].textContent || '').trim() !== '' &&
+                  (cells[5].textContent || '').trim() !== ''
+                );
+              })
+            );
+          },
+          value,
+          {
+            timeout: 30_000,
+          }
+        );
+
+        /*
+         * ページ側のData_write()によるDOM書換え完了を
+         * 確実に待つための短い待機。
+         */
+        await page.waitForTimeout(300);
+      };
+
+      /*
+       * 指数ベースを取得する。
+       */
+      await selectValuationBasis('0');
+      const indexBaseRows = await extractValuationRows();
+
+      /*
+       * 加重平均を取得する。
+       */
+      await selectValuationBasis('1');
+      const weightedAverageRows = await extractValuationRows();
+
+      if (indexBaseRows.length !== 60) {
+        throw new Error(
+          '指数ベースの取得件数が60件ではありません: ' +
+          indexBaseRows.length
+        );
+      }
+
+      if (weightedAverageRows.length !== 60) {
+        throw new Error(
+          '加重平均の取得件数が60件ではありません: ' +
+          weightedAverageRows.length
+        );
+      }
+
+      /*
+       * PHP解析用JSONをHTMLへ埋め込む。
+       *
+       * 既に同じ要素が存在する場合は削除してから作り直す。
+       */
+      await page.evaluate(
+        data => {
+          const elementId =
+            'mde_nikkei225_valuation_data';
+
+          const existing =
+            document.getElementById(elementId);
+
+          if (existing) {
+            existing.remove();
+          }
+
+          const script =
+            document.createElement('script');
+
+          script.id = elementId;
+          script.type = 'application/json';
+          script.textContent = JSON.stringify(data);
+
+          document.body.appendChild(script);
+        },
+        {
+          index_base: indexBaseRows,
+          weighted_average: weightedAverageRows,
+        }
+      );
+
+      console.log(
+        '[INFO] nikkei225 valuation dynamic DOM ready: ' +
+        `indexBase=${indexBaseRows.length} ` +
+        `weightedAverage=${weightedAverageRows.length}`
+      );
+
+    } catch (e) {
+      /*
+       * 今回は専用PHPがJSON必須としているため、
+       * 警告だけで続行せずfetch_dom.js自体を失敗させる。
+       */
+      throw new Error(
+        '日経225バリュエーションの動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
   // --- ここまで改修ポイント ---
 
   const html = await page.content();

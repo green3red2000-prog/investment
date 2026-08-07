@@ -19,7 +19,7 @@ $SaveRoot = 'C:\work\share\development\investment\data\kabutan\daily_market_snap
 
 # Target file prefix.
 # Leave blank to download all files allowed by Mode.
-# Available values: 01 through 08.
+# Available values: 01 through 09.
 # Multiple values are not supported.
 $TargetFile = ''
 
@@ -254,7 +254,17 @@ $Items = @(
   
   @{ Url = 'https://shikiho.toyokeizai.net/stocks/7203'; File = '08_shikiho_7203_market_price.html'; Check = 0 },
   @{ Url = 'https://shikiho.toyokeizai.net/stocks/6758'; File = '08_shikiho_6758_market_price.html'; Check = 0 },
-  @{ Url = 'https://shikiho.toyokeizai.net/stocks/9432'; File = '08_shikiho_9432_market_price.html'; Check = 0 }
+  @{ Url = 'https://shikiho.toyokeizai.net/stocks/9432'; File = '08_shikiho_9432_market_price.html'; Check = 0 },
+
+  @{ Url = 'https://nikkei225jp.com/chart/gyoushu.php'; File = '09_extract_01_tosho_sector_index.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/per.php'; File = '09_extract_02_nikkei225_valuation.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/touraku.php'; File = '09_extract_03_advance_decline_ratio.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/karauri.php'; File = '09_extract_04_short_selling_ratio.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/chart/nikkei.php'; File = '09_extract_05_nikkei225_contribution.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/vix.php'; File = '09_extract_06_volatility_index.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/bond/'; File = '09_extract_07_government_bond_yield.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/us_per.php'; File = '09_extract_08_us_market_valuation.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/schedule/'; File = '09_extract_09_economic_schedule.html'; Check = 0 }
 )
 
 Write-Host "[DEBUG] script path = $PSCommandPath"
@@ -264,7 +274,7 @@ Write-Host "[DEBUG] TestCheck = $TestCheck"
 # Filter scraping targets based on the execution mode.
 # 000: Index daily price files only (07_)
 # 001: Daily market snapshot files and Shikiho monitoring files
-#      (01_ through 06_, and 08_)
+#      (01_ through 06_, 08_, and 09_)
 if ($Mode -eq '000') {
   $Items = @(
     $Items | Where-Object {
@@ -275,19 +285,20 @@ if ($Mode -eq '000') {
   $Items = @(
     $Items | Where-Object {
       $_.File -match '^0[1-6]_' -or
-      $_.File -like '08_*'
+      $_.File -like '08_*' -or
+      $_.File -like '09_*'
     }
   )
 }
 
 # Filter scraping targets by file prefix.
 # Blank: all files allowed by Mode.
-# 01 through 08: files whose names begin with the specified prefix.
+# 01 through 09: files whose names begin with the specified prefix.
 if (-not [string]::IsNullOrWhiteSpace($TargetFile)) {
   $TargetFile = $TargetFile.Trim()
 
-  if ($TargetFile -notmatch '^0[1-8]$') {
-    throw "invalid TargetFile: $TargetFile. available values are 01 through 08"
+  if ($TargetFile -notmatch '^0[1-9]$') {
+    throw "invalid TargetFile: $TargetFile. available values are 01 through 09"
   }
 
   $Items = @(
@@ -412,9 +423,400 @@ function Invoke-Cdp {
 
   throw "CDP invoke timeout: id=$Id method=$Method"
 }
+function Add-Nikkei225ValuationExtractData {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Ws
+  )
 
+  Write-Host '[INFO] nikkei225 valuation DOM processing start'
+
+      $Expression = @'
+(function () {
+  var DATA_ELEMENT_ID = "mde_nikkei225_valuation_data";
+  var EXPECTED_ROW_COUNT = 60;
+  var REQUIRED_SOURCE_COUNT = EXPECTED_ROW_COUNT + 1;
+
+  if (!Array.isArray(window.DAILY)) {
+    throw new Error("DAILY is not available");
+  }
+
+  if (typeof window.gdt !== "function") {
+    throw new Error("gdt is not available");
+  }
+
+  if (window.DAILY.length <= 65 + REQUIRED_SOURCE_COUNT) {
+    throw new Error(
+      "DAILY row count is too small: " +
+      window.DAILY.length
+    );
+  }
+
+  function toNumber(value, name, rowNumber) {
+    var text =
+      value === null || value === undefined
+        ? ""
+        : String(value);
+
+    var number = Number(
+      text.replace(/,/g, "").trim()
+    );
+
+    if (!isFinite(number)) {
+      throw new Error(
+        name +
+        " is not numeric. row=" +
+        rowNumber +
+        " value=" +
+        text
+      );
+    }
+
+    return number;
+  }
+
+  function formatNumber(value, decimals, forceSign) {
+    var sign =
+      forceSign && value > 0
+        ? "+"
+        : "";
+
+    return (
+      sign +
+      value.toLocaleString(
+        "en-US",
+        {
+          minimumFractionDigits: decimals,
+          maximumFractionDigits: decimals,
+          useGrouping: true
+        }
+      )
+    );
+  }
+
+  function buildRows(basis) {
+    var perColumn =
+      basis === "index_base"
+        ? 25
+        : 12;
+
+    var pbrColumn =
+      basis === "index_base"
+        ? 26
+        : 13;
+
+    var dividendColumn =
+      basis === "index_base"
+        ? 27
+        : 14;
+
+    var sourceRows = [];
+
+    for (var i = 65; i < window.DAILY.length; i++) {
+      var sourceRow = window.DAILY[i];
+
+      if (
+        Array.isArray(sourceRow) &&
+        Number(sourceRow[1]) > 0
+      ) {
+        sourceRows.push({
+          row: sourceRow,
+          date: window.gdt(sourceRow[0])
+        });
+      }
+    }
+
+    sourceRows.sort(function (a, b) {
+      if (a.date < b.date) {
+        return 1;
+      }
+
+      if (a.date > b.date) {
+        return -1;
+      }
+
+      return 0;
+    });
+
+    if (sourceRows.length < REQUIRED_SOURCE_COUNT) {
+      throw new Error(
+        "source row count is too small: " +
+        sourceRows.length
+      );
+    }
+
+    var result = [];
+
+    for (
+      var index = 0;
+      index < EXPECTED_ROW_COUNT;
+      index++
+    ) {
+      var item = sourceRows[index];
+      var row = item.row;
+      var previousRow =
+        sourceRows[index + 1].row;
+      var rowNumber = index + 1;
+
+      var nikkei225 =
+        toNumber(
+          row[1],
+          "nikkei225",
+          rowNumber
+        );
+
+      var previousNikkei225 =
+        toNumber(
+          previousRow[1],
+          "previous_nikkei225",
+          rowNumber
+        );
+
+      var change =
+        nikkei225 -
+        previousNikkei225;
+
+      var primeVolume =
+        toNumber(
+          row[2],
+          "prime_volume",
+          rowNumber
+        );
+
+      var per =
+        toNumber(
+          row[perColumn],
+          "per",
+          rowNumber
+        );
+
+      var pbr =
+        toNumber(
+          row[pbrColumn],
+          "pbr",
+          rowNumber
+        );
+
+      var dividendYield =
+        toNumber(
+          row[dividendColumn],
+          "dividend_yield",
+          rowNumber
+        );
+
+      var jgbYield =
+        toNumber(
+          row[16],
+          "jgb_yield",
+          rowNumber
+        );
+
+      if (per <= 0 || pbr <= 0) {
+        throw new Error(
+          "invalid per/pbr. row=" +
+          rowNumber +
+          " per=" +
+          per +
+          " pbr=" +
+          pbr
+        );
+      }
+
+      result.push({
+        date:
+          item.date,
+
+        nikkei225:
+          formatNumber(
+            nikkei225,
+            2,
+            false
+          ),
+
+        change:
+          formatNumber(
+            change,
+            2,
+            true
+          ),
+
+        prime_volume:
+          formatNumber(
+            primeVolume,
+            0,
+            false
+          ),
+
+        per:
+          formatNumber(
+            per,
+            2,
+            false
+          ),
+
+        pbr:
+          formatNumber(
+            pbr,
+            2,
+            false
+          ),
+
+        eps:
+          formatNumber(
+            nikkei225 / per,
+            2,
+            false
+          ),
+
+        bps:
+          formatNumber(
+            nikkei225 / pbr,
+            2,
+            false
+          ),
+
+        earnings_yield:
+          formatNumber(
+            100 / per,
+            2,
+            false
+          ),
+
+        dividend_yield:
+          formatNumber(
+            dividendYield,
+            2,
+            false
+          ),
+
+        jgb_yield:
+          formatNumber(
+            jgbYield,
+            3,
+            false
+          )
+      });
+    }
+
+    return result;
+  }
+
+  var indexBaseRows =
+    buildRows("index_base");
+
+  var weightedAverageRows =
+    buildRows("weighted_average");
+
+  for (
+    var j = 0;
+    j < EXPECTED_ROW_COUNT;
+    j++
+  ) {
+    if (
+      indexBaseRows[j].date !==
+      weightedAverageRows[j].date
+    ) {
+      throw new Error(
+        "date mismatch. row=" +
+        (j + 1)
+      );
+    }
+  }
+
+  var existing =
+    document.getElementById(
+      DATA_ELEMENT_ID
+    );
+
+  if (existing) {
+    existing.parentNode.removeChild(existing);
+  }
+
+  var script =
+    document.createElement("script");
+
+  script.id =
+    DATA_ELEMENT_ID;
+
+  script.type =
+    "application/json";
+
+  script.textContent =
+    JSON.stringify({
+      index_base:
+        indexBaseRows,
+
+      weighted_average:
+        weightedAverageRows
+    });
+
+  document.body.appendChild(script);
+
+  return {
+    indexBaseCount:
+      indexBaseRows.length,
+
+    weightedAverageCount:
+      weightedAverageRows.length,
+
+    firstDate:
+      indexBaseRows[0].date,
+
+    lastDate:
+      indexBaseRows[
+        indexBaseRows.length - 1
+      ].date
+  };
+})()
+'@
+
+  $Res = Invoke-Cdp $Ws 5 'Runtime.evaluate' @{
+    expression = $Expression
+    returnByValue = $true
+  }
+
+  if ($Res.result.exceptionDetails -ne $null) {
+    $Description = ''
+
+    if (
+      $Res.result.exceptionDetails.exception -ne $null -and
+      $Res.result.exceptionDetails.exception.description -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.exception.description
+    } elseif (
+      $Res.result.exceptionDetails.text -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.text
+    }
+
+    throw (
+      'nikkei225 valuation DOM processing failed: ' +
+      $Description
+    )
+  }
+
+  $Value = $Res.result.result.value
+
+  if ($Value -eq $null) {
+    throw 'nikkei225 valuation DOM processing returned no result'
+  }
+
+  Write-Host (
+    '[INFO] nikkei225 valuation DOM ready: ' +
+    "indexBase=$($Value.indexBaseCount) " +
+    "weightedAverage=$($Value.weightedAverageCount) " +
+    "firstDate=$($Value.firstDate) " +
+    "lastDate=$($Value.lastDate)"
+  )
+}
 function Get-Html-From-Edge {
-  param($Port, $Url)
+  param(
+    $Port,
+    $Url,
+    [string]$FileName
+  )
 
   $Target = Invoke-RestMethod -Method Put "http://127.0.0.1:$Port/json/new?about:blank"
 
@@ -452,12 +854,33 @@ function Get-Html-From-Edge {
 
     Start-Sleep -Seconds 8
 
-    $Res = Invoke-Cdp $Ws 5 'Runtime.evaluate' @{
+    # Run target-specific DOM processing before saving HTML.
+    switch ($FileName) {
+      '09_extract_02_nikkei225_valuation.html' {
+        Add-Nikkei225ValuationExtractData `
+          -Ws $Ws
+      }
+
+      default {
+        # No target-specific DOM processing.
+      }
+    }
+
+    # CDP ID 5 is reserved for the valuation preprocessing.
+    $Res = Invoke-Cdp $Ws 6 'Runtime.evaluate' @{
       expression = 'document.documentElement.outerHTML'
       returnByValue = $true
     }
 
+    if ($Res.result.exceptionDetails -ne $null) {
+      throw 'document.documentElement.outerHTML evaluation failed'
+    }
+
     $Html = $Res.result.result.value
+
+    if ([string]::IsNullOrWhiteSpace($Html)) {
+      throw 'document.documentElement.outerHTML is empty'
+    }
   } finally {
     try {
       if ($Ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
@@ -822,7 +1245,10 @@ function Invoke-ItemDownload {
   Write-Host $Url
   Write-Host "[INFO] check=$Check"
 
-  $Html = Get-Html-From-Edge $Port $Url
+  $Html = Get-Html-From-Edge `
+    -Port $Port `
+    -Url $Url `
+    -FileName $FileName
 
   Test-Html-ByCheck $Html $Check | Out-Null
 
