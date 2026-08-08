@@ -705,6 +705,7 @@ try {
     $scale = '';
     $cheap = '';
     $up = '';
+    $proxy = '';
 
     // 対象市場区分コードチェック（111、112、113のみ処理）
     if (!in_array($marketCode, $TARGET_MARKET_CODES, true)) {
@@ -757,6 +758,7 @@ try {
           'timeout'          => 120,
           'retry_max'        => 1,
           'allow_http_error' => true,
+          'defer_proxy_success' => true,
         ));
 
         $html = isset($response['html'])
@@ -766,26 +768,56 @@ try {
         $httpCode = isset($response['http_code'])
           ? (int)$response['http_code']
           : 0;
+        
+        $proxy = isset($response['proxy'])
+          ? (string)$response['proxy']
+          : '';
 
         $htmlSize =
           (int)round(strlen($html) / 1024) . 'KB';
 
         if ($httpCode !== 200) {
+          if ($proxy !== '') {
+            remember_url_proxy_failure_(
+              $url,
+              $proxy
+            );
+          }
+
           throw new RuntimeException(
             "HTTPレスポンスコードが200ではありません: {$httpCode}"
           );
         }
 
         if ($html === '') {
+          if ($proxy !== '') {
+            remember_url_proxy_failure_(
+              $url,
+              $proxy
+            );
+          }
+
           throw new RuntimeException(
             '取得したHTMLが空です。'
           );
         }
 
       } else {
-        $html = http_get_text_browser($url, array(
-          'timeout' => 90,
-        ));
+        $response = http_get_text_browser_with_meta(
+          $url,
+          array(
+            'timeout'             => 90,
+            'defer_proxy_success' => true,
+          )
+        );
+
+        $html = isset($response['html'])
+          ? (string)$response['html']
+          : '';
+
+        $proxy = isset($response['proxy'])
+          ? (string)$response['proxy']
+          : '';
       }
       
       $parsed = parse_shikiho_html($html);
@@ -804,13 +836,27 @@ try {
         ($parsed['cheapness'] === '') &&
         ($parsed['upside'] === '');
 
-       if ($allEmpty) {
+      if ($allEmpty) {
+        if ($proxy !== '') {
+          remember_url_proxy_failure_(
+            $url,
+            $proxy
+          );
+        }
+
         // デバッグ保存は任意（デフォルトOFF）
         $dbg = '';
         // $dbg = $TMP_DIR . '/shikiho_empty_' . $code . '_' . date('Ymd_His') . '.html';
         // @file_put_contents($dbg, $html);
-        $suffix = ($dbg !== '') ? " (saved={$dbg})" : "";
-        throw new RuntimeException("parsed empty or blocked html{$suffix}");
+
+        $suffix =
+          ($dbg !== '')
+            ? " (saved={$dbg})"
+            : "";
+
+        throw new RuntimeException(
+          "parsed empty or blocked html{$suffix}"
+        );
       }
       
       $dataAsOf = $parsed['data_as_of'];
@@ -824,6 +870,13 @@ try {
       $scale   = $parsed['scale'];
       $cheap   = $parsed['cheapness'];
       $up      = $parsed['upside'];
+
+      if ($proxy !== '') {
+        remember_url_proxy_success_(
+          $url,
+          $proxy
+        );
+      }
 
       $result = '正常';
       $okCount++;

@@ -59,6 +59,12 @@ const SERVICE_ACCOUNT_JSON = '/opt/invest/secrets/sheets-php-483500-54a070e9ff1c
 // 形式: host:port:user:pass（空行OK, #コメントOK）
 const WEBSHARE_PROXY_FILE = '/opt/invest/conf/webshare_proxies.txt';
 
+// URL別プロキシ失敗履歴
+const PROXY_URL_FAILURE_FILE = '/opt/invest/scraping/state/proxy_url_failures.json';
+
+// 同一URLでこの回数連続失敗したプロキシは使用しない
+const PROXY_URL_FAILURE_THRESHOLD = 3;
+
 /**
  * Webshare proxy をテキストファイルから読み込み、従来の配列形式へ整形
  * @return array<int, array{proxy:string,user:string,pass:string}>
@@ -122,6 +128,7 @@ $GLOBALS['WEBSHARE_PROXIES'] = load_webshare_proxies_from_file(WEBSHARE_PROXY_FI
 
 // 実行中セッション（sticky用）
 $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = null;
+$GLOBALS['SCRAPE_HTTP_SESSION_STICKY'] = false;
 
 // 収集：エラーになったプロキシ（host:port）
 $GLOBALS['SCRAPE_BAD_PROXIES'] = [];
@@ -143,22 +150,25 @@ function set_token_json(string $tokenJsonPath): void {
 
 /**
  * 1回の実行中は同じプロキシを使いたい時に呼ぶ（推奨）
- * - sticky=true: 実行開始時に1回だけプロキシ選択、その後固定
+ * - sticky=true: 最初の取得時にプロキシ選択、その後固定
  * - sticky=false: 固定を解除（毎回ランダム）
  */
 function http_session_begin(bool $sticky = true): void {
-  if (!$sticky) {
-    $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = null;
-    return;
-  }
-  $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = pick_random_proxy_credential();
+  $GLOBALS['SCRAPE_HTTP_SESSION_STICKY'] = $sticky;
+  $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = null;
 }
 
 /**
  * sticky中に「出口を変えたい」場合
  */
-function http_session_reset_proxy(): void {
-  $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = pick_random_proxy_credential();
+function http_session_reset_proxy(?string $url = null): void {
+  if (empty($GLOBALS['SCRAPE_HTTP_SESSION_STICKY'])) {
+    $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] = null;
+    return;
+  }
+
+  $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] =
+    pick_random_proxy_credential($url);
 }
 
 /**
@@ -196,6 +206,15 @@ function http_get_text(string $url, array $opt = []): string {
 
   // Browser fallback 有効
   $enableBrowserFallback = (bool)($opt['browser_fallback'] ?? true);
+  
+  /*
+   * trueの場合、HTTP取得成功時点では
+   * URL別失敗回数をリセットしない。
+   *
+   * 呼び出し元でパース結果まで検証した後、
+   * remember_url_proxy_success_() を呼ぶ。
+   */
+  $deferProxySuccess = (bool)($opt['defer_proxy_success'] ?? false);
 
   $lastErr = null;
 
@@ -207,8 +226,7 @@ function http_get_text(string $url, array $opt = []): string {
     // --------------------------------------------------
     // proxy選択
     // --------------------------------------------------
-    $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
-      ?? pick_random_proxy_credential();
+    $cred = get_proxy_credential_for_url_($url);
 
     $proxyHp = proxy_hostport_((string)$cred['proxy']);
 
@@ -289,29 +307,35 @@ function http_get_text(string $url, array $opt = []): string {
         $errNo === 35 ||
         $errNo === 28;
 
-      if (($isTimeout || $isProxy407 || $isProxyTransient)
-          && $try < $retryMax) {
-
-        remember_bad_proxy_((string)$cred['proxy']);
-
-        fwrite(STDERR,
-          "[HTTP][retry {$try}/{$retryMax}] " .
-          "curl/proxy error via {$proxyHp}. " .
-          "rotate proxy. sleep {$sleepMs}ms: {$url}\n"
+      if ($isTimeout || $isProxy407 || $isProxyTransient) {
+        remember_url_proxy_failure_(
+          $url,
+          (string)$cred['proxy']
         );
 
-        usleep($sleepMs * 1000);
+        if ($try < $retryMax) {
+          remember_bad_proxy_((string)$cred['proxy']);
 
-        if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
-          http_session_reset_proxy();
+          fwrite(STDERR,
+            "[HTTP][retry {$try}/{$retryMax}] " .
+            "curl/proxy error via {$proxyHp}. " .
+            "rotate proxy. sleep {$sleepMs}ms: {$url}\n"
+          );
+
+          usleep($sleepMs * 1000);
+
+          if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
+            http_session_reset_proxy($url);
+          }
+
+          continue;
         }
-
-        continue;
+        
+        break;
       }
-
+      
       break;
     }
-
     // ==================================================
     // HTMLブロック判定
     // ==================================================
@@ -330,6 +354,13 @@ function http_get_text(string $url, array $opt = []): string {
     // 成功
     // ==================================================
     if ($code === 200 && !$isBlockedHtml) {
+      if (!$deferProxySuccess) {
+        remember_url_proxy_success_(
+          $url,
+          (string)$cred['proxy']
+        );
+      }
+
       return $bodyStr;
     }
 
@@ -355,62 +386,60 @@ function http_get_text(string $url, array $opt = []): string {
     ];
 
     if (
-      (
-        in_array($code, $retryableCodes, true)
-        || $isBlockedHtml
-      )
-      && $try < $retryMax
+      in_array($code, $retryableCodes, true)
+      || $isBlockedHtml
     ) {
-
-      remember_bad_proxy_((string)$cred['proxy']);
-
-      fwrite(STDERR,
-        "[HTTP][retry {$try}/{$retryMax}] " .
-        "HTTP {$code} blocked/retry via {$proxyHp}. " .
-        "rotate proxy. sleep {$sleepMs}ms: {$url}\n"
+      remember_url_proxy_failure_(
+        $url,
+        (string)$cred['proxy']
       );
 
-      usleep($sleepMs * 1000);
-
-      if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
-        http_session_reset_proxy();
-      }
-
-      // ----------------------------------------------
-      // Browser fallback
-      // ----------------------------------------------
-      if ($enableBrowserFallback && $try >= 3) {
+      if ($try < $retryMax) {
+        remember_bad_proxy_((string)$cred['proxy']);
 
         fwrite(STDERR,
-          "[HTTP][browser-fallback] {$url}\n"
+          "[HTTP][retry {$try}/{$retryMax}] " .
+          "HTTP {$code} blocked/retry via {$proxyHp}. " .
+          "rotate proxy. sleep {$sleepMs}ms: {$url}\n"
         );
 
-        try {
+        usleep($sleepMs * 1000);
 
-          return http_get_text_browser($url, [
-            'timeout' => 60,
-            'retry_max' => 2,
-            'retry_sleep_ms' => 3000,
-          ]);
+        if ($GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] !== null) {
+          http_session_reset_proxy($url);
+        }
 
-        } catch (\Throwable $e) {
+        // ----------------------------------------------
+        // Browser fallback
+        // ----------------------------------------------
+        if ($enableBrowserFallback && $try >= 3) {
 
           fwrite(STDERR,
-            "[HTTP][browser-fallback-failed] " .
-            $e->getMessage() . "\n"
+            "[HTTP][browser-fallback] {$url}\n"
           );
+
+          try {
+            return http_get_text_browser($url, [
+              'timeout' => 60,
+              'retry_max' => 2,
+              'retry_sleep_ms' => 3000,
+            ]);
+
+          } catch (\Throwable $e) {
+            fwrite(STDERR,
+              "[HTTP][browser-fallback-failed] " .
+              $e->getMessage() . "\n"
+            );
+          }
         }
+
+        continue;
       }
-
-      continue;
     }
-
     // ==================================================
     // fatal
     // ==================================================
-    $lastErr =
-      "HTTP {$code} error via proxy {$proxyHp}: {$url}";
-
+    $lastErr = "HTTP {$code} error via proxy {$proxyHp}: {$url}";
     break;
   }
 
@@ -457,6 +486,7 @@ function http_get_text_browser_with_meta(
   $timeoutSec = (int)($opt['timeout'] ?? 60);
   $retryMax   = (int)($opt['retry_max'] ?? 3);
   $sleepMs    = (int)($opt['retry_sleep_ms'] ?? 1200);
+  $deferProxySuccess = (bool)($opt['defer_proxy_success'] ?? false);
 
   /*
    * trueの場合、HTTP 403や429などでも、
@@ -470,8 +500,7 @@ function http_get_text_browser_with_meta(
 
   for ($try = 1; $try <= $retryMax; $try++) {
 
-    $cred = $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
-      ?? pick_random_proxy_credential();
+    $cred = get_proxy_credential_for_url_($url);
 
     $proxyHp = proxy_hostport_((string)$cred['proxy']);
 
@@ -691,6 +720,13 @@ function http_get_text_browser_with_meta(
               $httpCode === 200 &&
               !$isBlockedHtml
             ) {
+              if (!$deferProxySuccess) {
+                remember_url_proxy_success_(
+                  $url,
+                  (string)$cred['proxy']
+                );
+              }
+
               return [
                 'html'       => $html,
                 'http_code'  => $httpCode,
@@ -706,6 +742,11 @@ function http_get_text_browser_with_meta(
           }
         }
       }
+
+      remember_url_proxy_failure_(
+        $url,
+        (string)$cred['proxy']
+      );
 
       remember_bad_proxy_((string)$cred['proxy']);
 
@@ -723,7 +764,7 @@ function http_get_text_browser_with_meta(
         $GLOBALS['SCRAPE_HTTP_SESSION_PROXY']
         !== null
       ) {
-        http_session_reset_proxy();
+        http_session_reset_proxy($url);
       }
 
     } finally {
@@ -938,11 +979,319 @@ function ensure_dir(string $dir): void {
 }
 
 /**
+ * URL別プロキシ失敗履歴を読み込む
+ *
+ * @return array<string,mixed>
+ */
+function load_proxy_url_failures_(): array {
+  $file = PROXY_URL_FAILURE_FILE;
+
+  if (!is_file($file)) {
+    return [];
+  }
+
+  $fp = @fopen($file, 'r');
+
+  if ($fp === false) {
+    return [];
+  }
+
+  try {
+    if (!flock($fp, LOCK_SH)) {
+      return [];
+    }
+
+    $json = stream_get_contents($fp);
+
+    flock($fp, LOCK_UN);
+
+    if ($json === false || trim($json) === '') {
+      return [];
+    }
+
+    $data = json_decode($json, true);
+
+    return is_array($data) ? $data : [];
+
+  } finally {
+    fclose($fp);
+  }
+}
+
+/**
+ * URL別プロキシ失敗履歴を更新する。
+ *
+ * $success=true:
+ *   連続失敗をリセットする。
+ *
+ * $success=false:
+ *   連続失敗を+1する。
+ *
+ * @return int 更新後の連続失敗回数
+ */
+function update_proxy_url_failure_(
+  string $url,
+  string $proxyUrl,
+  bool $success
+): int {
+  $url = trim($url);
+  $proxyHp = proxy_hostport_($proxyUrl);
+
+  if ($url === '' || $proxyHp === '') {
+    return 0;
+  }
+
+  $file = PROXY_URL_FAILURE_FILE;
+
+  ensure_dir(dirname($file));
+
+  $fp = fopen($file, 'c+');
+
+  if ($fp === false) {
+    throw new RuntimeException(
+      "Proxy failure file open failed: {$file}"
+    );
+  }
+
+  try {
+    if (!flock($fp, LOCK_EX)) {
+      throw new RuntimeException(
+        "Proxy failure file lock failed: {$file}"
+      );
+    }
+
+    rewind($fp);
+
+    $json = stream_get_contents($fp);
+
+    $data = [];
+
+    if (
+      $json !== false &&
+      trim($json) !== ''
+    ) {
+      $decoded = json_decode($json, true);
+
+      if (is_array($decoded)) {
+        $data = $decoded;
+      }
+    }
+
+    if ($success) {
+      /*
+       * 成功したら連続失敗を完全リセット。
+       * ファイルを肥大化させないため0ではなく削除する。
+       */
+      if (
+        isset($data[$url]) &&
+        is_array($data[$url])
+      ) {
+        unset($data[$url][$proxyHp]);
+
+        if (count($data[$url]) === 0) {
+          unset($data[$url]);
+        }
+      }
+
+      $failureCount = 0;
+
+    } else {
+      $current = 0;
+
+      if (
+        isset($data[$url][$proxyHp]['failures'])
+      ) {
+        $current =
+          (int)$data[$url][$proxyHp]['failures'];
+      }
+
+      $failureCount = $current + 1;
+
+      if (!isset($data[$url])) {
+        $data[$url] = [];
+      }
+
+      $data[$url][$proxyHp] = [
+        'failures' => $failureCount,
+        'last_failure' => date('Y-m-d H:i:s'),
+      ];
+    }
+
+    $encoded = json_encode(
+      $data,
+      JSON_PRETTY_PRINT |
+      JSON_UNESCAPED_SLASHES |
+      JSON_UNESCAPED_UNICODE
+    );
+
+    if ($encoded === false) {
+      throw new RuntimeException(
+        'Proxy failure JSON encode failed.'
+      );
+    }
+
+    rewind($fp);
+
+    if (!ftruncate($fp, 0)) {
+      throw new RuntimeException(
+        "Proxy failure file truncate failed: {$file}"
+      );
+    }
+
+    if (fwrite($fp, $encoded . "\n") === false) {
+      throw new RuntimeException(
+        "Proxy failure file write failed: {$file}"
+      );
+    }
+
+    fflush($fp);
+    flock($fp, LOCK_UN);
+
+    return $failureCount;
+
+  } finally {
+    fclose($fp);
+  }
+}
+
+/**
+ * URL＋プロキシの失敗を1回記録する
+ */
+function remember_url_proxy_failure_(
+  string $url,
+  string $proxyUrl
+): int {
+  $proxyHp = proxy_hostport_($proxyUrl);
+
+  $count = update_proxy_url_failure_(
+    $url,
+    $proxyUrl,
+    false
+  );
+
+  fwrite(
+    STDERR,
+    "[PROXY][URL_FAIL] " .
+    "proxy={$proxyHp} " .
+    "failures={$count}/" .
+    PROXY_URL_FAILURE_THRESHOLD . " " .
+    "url={$url}\n"
+  );
+
+  if ($count >= PROXY_URL_FAILURE_THRESHOLD) {
+    fwrite(
+      STDERR,
+      "[PROXY][URL_BLOCK] " .
+      "proxy={$proxyHp} " .
+      "url={$url}\n"
+    );
+  }
+
+  return $count;
+}
+
+/**
+ * URL＋プロキシの成功を記録する。
+ * 連続失敗履歴が存在する場合はリセットする。
+ */
+function remember_url_proxy_success_(
+  string $url,
+  string $proxyUrl
+): void {
+  update_proxy_url_failure_(
+    $url,
+    $proxyUrl,
+    true
+  );
+}
+
+/**
+ * 指定URLで使用禁止になっているプロキシか判定
+ */
+function is_proxy_blocked_for_url_(
+  string $url,
+  string $proxyUrl,
+  ?array $failureMap = null
+): bool {
+  if ($url === '') {
+    return false;
+  }
+
+  $proxyHp = proxy_hostport_($proxyUrl);
+
+  if ($proxyHp === '') {
+    return false;
+  }
+
+  if ($failureMap === null) {
+    $failureMap = load_proxy_url_failures_();
+  }
+
+  $failures =
+    (int)($failureMap[$url][$proxyHp]['failures'] ?? 0);
+
+  return (
+    $failures >= PROXY_URL_FAILURE_THRESHOLD
+  );
+}
+
+/**
+ * URLを考慮して使用するプロキシを取得する
+ *
+ * stickyの場合:
+ *   現在のproxyがそのURLで使用可能ならそのまま使用。
+ *   使用禁止なら別proxyへ変更する。
+ */
+function get_proxy_credential_for_url_(
+  string $url
+): array {
+  $sticky =
+    !empty($GLOBALS['SCRAPE_HTTP_SESSION_STICKY']);
+
+  if ($sticky) {
+    $current =
+      $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] ?? null;
+
+    if (is_array($current)) {
+      $proxyHp =
+        proxy_hostport_((string)$current['proxy']);
+
+      $bad =
+        $GLOBALS['SCRAPE_BAD_PROXIES'] ?? [];
+
+      if (
+        !isset($bad[$proxyHp]) &&
+        !is_proxy_blocked_for_url_(
+          $url,
+          (string)$current['proxy']
+        )
+      ) {
+        return $current;
+      }
+    }
+
+    $current = pick_random_proxy_credential($url);
+
+    $GLOBALS['SCRAPE_HTTP_SESSION_PROXY'] =
+      $current;
+
+    return $current;
+  }
+
+  return pick_random_proxy_credential($url);
+}
+
+/**
  * Webshare プロキシをランダムで1つ返す
+ *
+ * URL指定時は、
+ * そのURLで3回以上連続失敗しているプロキシを除外する。
+ *
  * @return array{proxy:string,user:string,pass:string}
  */
-function pick_random_proxy_credential(): array {
-
+function pick_random_proxy_credential(
+  ?string $url = null
+): array {
   $list = $GLOBALS['WEBSHARE_PROXIES'] ?? [];
 
   if (!is_array($list) || count($list) === 0) {
@@ -951,15 +1300,50 @@ function pick_random_proxy_credential(): array {
     );
   }
 
-  // ------------------------------------------
-  // bad proxy除外
-  // ------------------------------------------
+  $url = trim((string)$url);
+
+  /*
+   * まずURL別ブラックリストを除外する。
+   */
+  $failureMap =
+    ($url !== '')
+      ? load_proxy_url_failures_()
+      : [];
+
+  $urlAllowed = [];
+
+  foreach ($list as $p) {
+    if (
+      $url !== '' &&
+      is_proxy_blocked_for_url_(
+        $url,
+        (string)$p['proxy'],
+        $failureMap
+      )
+    ) {
+      continue;
+    }
+
+    $urlAllowed[] = $p;
+  }
+
+  /*
+   * URL別ブラックリストは自動解除しない。
+   */
+  if (count($urlAllowed) === 0) {
+    throw new RuntimeException(
+      "このURLで使用可能なプロキシがありません: {$url}"
+    );
+  }
+
+  /*
+   * 次に、このPHP実行中にbadになったproxyを除外する。
+   */
   $bad = $GLOBALS['SCRAPE_BAD_PROXIES'] ?? [];
 
   $filtered = [];
 
-  foreach ($list as $p) {
-
+  foreach ($urlAllowed as $p) {
     $hp = proxy_hostport_((string)$p['proxy']);
 
     if (!isset($bad[$hp])) {
@@ -967,16 +1351,22 @@ function pick_random_proxy_credential(): array {
     }
   }
 
-  // 全滅したら復活
+  /*
+   * 実行中badだけで全滅した場合は、
+   * 従来どおり実行中blacklistのみリセットする。
+   *
+   * URL別blacklistは維持する。
+   */
   if (count($filtered) === 0) {
-
-    fwrite(STDERR,
-      "[PROXY] all proxies marked bad. reset blacklist.\n"
+    fwrite(
+      STDERR,
+      "[PROXY] all runtime proxies marked bad. " .
+      "reset runtime blacklist.\n"
     );
 
     $GLOBALS['SCRAPE_BAD_PROXIES'] = [];
 
-    $filtered = $list;
+    $filtered = $urlAllowed;
   }
 
   $p = $filtered[array_rand($filtered)];

@@ -288,28 +288,58 @@ try {
       " source={$source}" .
       "\n";
 
-    $html = load_target_html_(
+    $loaded = load_target_html_(
       $targetId,
       $definition,
       $source,
       $htmlDir
     );
 
-    switch ($targetId) {
-      case 'tosho_sector_index':
-        $parsed = parse_tosho_sector_index_html_($html);
-        $reportSection = build_tosho_sector_index_message_($parsed);
-        break;
-        
-      case 'nikkei225_valuation':
-        $parsed = parse_nikkei225_valuation_html_($html);
-        $reportSection = build_nikkei225_valuation_message_($parsed);
-        break;
+    $html = (string)$loaded['html'];
+    $proxy = (string)$loaded['proxy'];
 
-      default:
-        throw new RuntimeException(
-          "専用抽出処理が実装されていません: {$targetId}"
+    try {
+      switch ($targetId) {
+        case 'tosho_sector_index':
+          $parsed = parse_tosho_sector_index_html_($html);
+          $reportSection =
+            build_tosho_sector_index_message_($parsed);
+          break;
+
+        case 'nikkei225_valuation':
+          $parsed = parse_nikkei225_valuation_html_($html);
+          $reportSection =
+            build_nikkei225_valuation_message_($parsed);
+          break;
+
+        default:
+          throw new RuntimeException(
+            "専用抽出処理が実装されていません: {$targetId}"
+          );
+      }
+
+    } catch (Throwable $e) {
+      if (
+        $source === 'web' &&
+        $proxy !== ''
+      ) {
+        remember_url_proxy_failure_(
+          (string)$definition['url'],
+          $proxy
         );
+      }
+
+      throw $e;
+    }
+
+    if (
+      $source === 'web' &&
+      $proxy !== ''
+    ) {
+      remember_url_proxy_success_(
+        (string)$definition['url'],
+        $proxy
+      );
     }
 
     $reportSections[] = $reportSection;
@@ -543,7 +573,11 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
     }
 
     echo "[FILE] {$targetId} {$htmlPath}\n";
-    return $html;
+
+    return [
+      'html' => $html,
+      'proxy' => '',
+    ];
   }
 
   if (!function_exists('http_get_text_browser_with_meta')) {
@@ -561,8 +595,13 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
       'retry_max' => 3,
       'retry_sleep_ms' => 3000,
       'allow_http_error' => true,
+      'defer_proxy_success' => true,
     )
   );
+  
+  $proxy = isset($response['proxy'])
+    ? (string)$response['proxy']
+    : '';
 
   $html = isset($response['html'])
     ? (string)$response['html']
@@ -584,6 +623,14 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
     "\n";
 
   if ($httpCode !== 200) {
+  	  
+  	if ($proxy !== '') {
+      remember_url_proxy_failure_(
+        (string)$definition['url'],
+        $proxy
+      );
+    }
+  	  
     throw new RuntimeException(
       "HTTPレスポンスコードが200ではありません: {$httpCode}"
     );
@@ -595,7 +642,10 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
     );
   }
 
-  return $html;
+  return [
+    'html' => $html,
+    'proxy' => $proxy,
+  ];
 }
 
 // =======================================================

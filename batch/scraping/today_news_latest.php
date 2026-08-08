@@ -403,6 +403,7 @@ if (should_run_nikkei225jp_()) {
             'timeout'          => 120,
             'retry_max'        => 1,
             'allow_http_error' => false,
+            'defer_proxy_success' => true,
           ]
         );
 
@@ -425,14 +426,24 @@ if (should_run_nikkei225jp_()) {
           "articles={$articleCount}\n";
 
         if ($articleCount === 0) {
+          remember_url_proxy_failure_(
+            NIKKEI225JP_URL,
+            $proxy
+          );
+
           throw new RuntimeException(
             'nikkei225jp.comのパース結果が0件でした。'
           );
         }
 
         /*
-         * 1件以上パースできたため成功。
+         * HTML取得だけでなくパースも正常だったため成功。
          */
+        remember_url_proxy_success_(
+          NIKKEI225JP_URL,
+          $proxy
+        );
+
         $lastParseError = null;
         break;
 
