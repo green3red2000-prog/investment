@@ -8,6 +8,9 @@
  * 現在の実装対象:
  *   tosho_sector_index：東証業種別指数
  *   nikkei225_valuation：日経225バリュエーション
+ *   advance_decline_ratio：騰落レシオ
+ *   short_selling_ratio：空売り比率
+ *   nikkei225_contribution：日経225寄与度
  *
  * 実行例:
  *   php market_data_extract.php
@@ -25,6 +28,9 @@
 require __DIR__ . '/lib/scraping_common.php';
 require __DIR__ . '/mde_tosho_sector_index.php';
 require __DIR__ . '/mde_nikkei225_valuation.php';
+require __DIR__ . '/mde_advance_decline_ratio.php';
+require __DIR__ . '/mde_short_selling_ratio.php';
+require __DIR__ . '/mde_nikkei225_contribution.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -58,21 +64,21 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/data/touraku.php',
     'file' => '09_extract_03_advance_decline_ratio.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'short_selling_ratio' => array(
     'name' => '空売り比率',
     'url' => 'https://nikkei225jp.com/data/karauri.php',
     'file' => '09_extract_04_short_selling_ratio.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'nikkei225_contribution' => array(
     'name' => '日経225寄与度',
     'url' => 'https://nikkei225jp.com/chart/nikkei.php',
     'file' => '09_extract_05_nikkei225_contribution.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'volatility_index' => array(
     'name' => '恐怖指数',
@@ -311,7 +317,22 @@ try {
           $reportSection =
             build_nikkei225_valuation_message_($parsed);
           break;
-
+          
+        case 'advance_decline_ratio':
+          $parsed = parse_advance_decline_ratio_html_($html);
+          $reportSection = build_advance_decline_ratio_message_($parsed);
+          break;
+        
+        case 'short_selling_ratio':
+          $parsed = parse_short_selling_ratio_html_($html);
+          $reportSection = build_short_selling_ratio_message_($parsed);
+          break;
+          
+        case 'nikkei225_contribution':
+          $parsed = parse_nikkei225_contribution_html_($html);
+          $reportSection = build_nikkei225_contribution_message_($parsed);
+          break;
+          
         default:
           throw new RuntimeException(
             "専用抽出処理が実装されていません: {$targetId}"
