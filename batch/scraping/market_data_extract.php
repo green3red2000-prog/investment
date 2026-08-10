@@ -11,6 +11,8 @@
  *   advance_decline_ratio：騰落レシオ
  *   short_selling_ratio：空売り比率
  *   nikkei225_contribution：日経225寄与度
+ *   volatility_index：恐怖指数
+ *   government_bond_yield：国債利回り
  *
  * 実行例:
  *   php market_data_extract.php
@@ -31,6 +33,8 @@ require __DIR__ . '/mde_nikkei225_valuation.php';
 require __DIR__ . '/mde_advance_decline_ratio.php';
 require __DIR__ . '/mde_short_selling_ratio.php';
 require __DIR__ . '/mde_nikkei225_contribution.php';
+require __DIR__ . '/mde_volatility_index.php';
+require __DIR__ . '/mde_government_bond_yield.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -85,14 +89,14 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/data/vix.php',
     'file' => '09_extract_06_volatility_index.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'government_bond_yield' => array(
     'name' => '国債利回り',
     'url' => 'https://nikkei225jp.com/bond/',
     'file' => '09_extract_07_government_bond_yield.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'us_market_valuation' => array(
     'name' => '米国株バリュエーション',
@@ -332,7 +336,17 @@ try {
           $parsed = parse_nikkei225_contribution_html_($html);
           $reportSection = build_nikkei225_contribution_message_($parsed);
           break;
-          
+
+        case 'volatility_index':
+          $parsed = parse_volatility_index_html_($html);
+          $reportSection = build_volatility_index_message_($parsed);
+          break;
+
+        case 'government_bond_yield':
+          $parsed = parse_government_bond_yield_html_($html);
+          $reportSection = build_government_bond_yield_message_($parsed);
+          break;
+
         default:
           throw new RuntimeException(
             "専用抽出処理が実装されていません: {$targetId}"

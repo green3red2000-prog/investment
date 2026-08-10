@@ -307,9 +307,9 @@ function build_advance_decline_ratio_message_($parsed) {
 
   $lines = array();
 
-  $lines[] = '【騰落レシオ】';
+  $lines[] = '■騰落レシオ';
   $lines[] = '';
-  $lines[] = '■騰落レシオ 90営業日';
+  $lines[] = '【騰落レシオ 90営業日】';
 
   $lines[] = implode(
     "\t",

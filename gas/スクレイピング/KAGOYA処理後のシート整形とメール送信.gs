@@ -45,10 +45,11 @@ function postProcess_messages_5minTrigger() {
       '全銘柄日足取得_メッセージ_',
       '全銘柄日足分析_メッセージ_',
       '大量保有速報_メッセージ_',
+      '市況関連データ抽出_ALL_メッセージ_',
     ],
 
     // ★追加：コピーしないプレフィックス
-    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '四季報情報更新監視', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析']),
+    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '四季報情報更新監視', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析','市況関連データ抽出_ALL']),
     
     // ★追加：マスタ更新するプレフィックス
     needsBaseInfoMasterUpdate: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得']),
@@ -331,6 +332,32 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
   }
 
   const { basePrefix, dateStr, sheetName } = parsed;
+
+  // 市況関連データ抽出_ALL はスプレッドシートを使用せず、
+  // 対応するレポートTXTのURLをメール本文に付加して送信する
+  if (basePrefix === '市況関連データ抽出_ALL') {
+    const reportName = `市況関連データ抽出_ALL_レポート_${dateStr}.txt`;
+    const reportFiles = srcFolder.getFilesByName(reportName);
+
+    if (!reportFiles.hasNext()) {
+      console.log(`スキップ（対応レポート未発見）: msg=${msgName} / report=${reportName}`);
+      return;
+    }
+
+    const reportFile = reportFiles.next();
+
+    const bodyText = msgFile.getBlob().getDataAsString('UTF-8');
+    const subject = `${basePrefix}_${dateStr}`;
+    const mailBody = bodyText + '\n\n' + reportFile.getUrl();
+
+    GmailApp.sendEmail(CONFIG.mailTo, subject, mailBody);
+
+    // 対象のメッセージファイル削除
+    msgFile.setTrashed(true);
+
+    console.log(`完了: ${msgName}`);
+    return;
+  }
 
   // 対応するスプレッドシート名（_メッセージ を除去、拡張子は無い前提）
   const ssName = `${basePrefix}_${dateStr}`; // 例: PTS＆朝刊ニュース_2026-01-16

@@ -248,9 +248,9 @@ function build_short_selling_ratio_message_($parsed) {
 
   $lines = array();
 
-  $lines[] = '【空売り比率】';
+  $lines[] = '■空売り比率';
   $lines[] = '';
-  $lines[] = '■空売り比率 90営業日';
+  $lines[] = '【空売り比率 90営業日】';
 
   $lines[] = implode(
     "\t",

@@ -583,7 +583,7 @@ function build_nikkei225_contribution_message_($parsed) {
 
   $lines = array();
 
-  $lines[] = '【日経225寄与度】';
+  $lines[] = '■日経225寄与度';
   $lines[] = '更新日時: ' . $parsed['updated_at'];
   $lines[] = '';
 
@@ -613,7 +613,7 @@ function append_nikkei225_contribution_section_(
   $sectionName,
   $rows
 ) {
-  $lines[] = "■{$sectionName}";
+  $lines[] = "【{$sectionName}】";
 
   /*
    * 銘柄名は全角15文字分の幅を確保する。

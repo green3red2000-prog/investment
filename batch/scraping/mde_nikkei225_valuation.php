@@ -406,7 +406,7 @@ function build_nikkei225_valuation_message_($parsed) {
   }
 
   $lines = array();
-  $lines[] = '【日経225バリュエーション】';
+  $lines[] = '■日経225バリュエーション';
   $lines[] = '';
 
   append_nikkei225_valuation_section_(
@@ -441,7 +441,7 @@ function build_nikkei225_valuation_message_($parsed) {
   $bps = (float)str_replace(',', '', $latest['bps']);
 
   $lines[] = '';
-  $lines[] = '■日経平均想定値';
+  $lines[] = '【日経平均想定値】';
 
   // PERベース
   foreach ([25.0, 22.5, 20.0, 17.5, 15.0, 12.5, 10.0] as $per) {
@@ -466,7 +466,7 @@ function append_nikkei225_valuation_section_(
   $basisName,
   $rows
 ) {
-  $lines[] = "■{$basisName}";
+  $lines[] = "【{$basisName}】";
   $lines[] = implode(
     "\t",
     array(

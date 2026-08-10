@@ -424,14 +424,14 @@ function parse_sector_ranking_cell_($xpath, $cell, $expectedDirection) {
 
 function build_tosho_sector_index_message_($parsed) {
   $lines = array();
-  $lines[] = "【東証業種別指数】";
+  $lines[] = "■東証業種別指数";
 
   if ($parsed['updated_at'] !== '') {
     $lines[] = "更新日時: {$parsed['updated_at']}";
   }
 
   $lines[] = '';
-  $lines[] = "■値上がり率 TOP10";
+  $lines[] = "【値上がり率 TOP10】";
   $lines[] = "順位\t騰落率\t指数値\t業種";
 
   foreach ($parsed['gainers'] as $row) {
@@ -460,7 +460,7 @@ function build_tosho_sector_index_message_($parsed) {
   }
 
   $lines[] = '';
-  $lines[] = "■値下がり率 TOP10";
+  $lines[] = "【値下がり率 TOP10】";
   $lines[] = "順位\t騰落率\t指数値\t業種";
 
   foreach ($parsed['decliners'] as $row) {
@@ -489,7 +489,7 @@ function build_tosho_sector_index_message_($parsed) {
   }
   
   $lines[] = '';
-  $lines[] = "■業種別株価指数 変化率一覧 2ヶ月・連続";
+  $lines[] = "【業種別株価指数 変化率一覧 2ヶ月・連続】";
   $lines[] = "方向\t連続日数\t業種";
 
   foreach ($parsed['continuous'] as $row) {
