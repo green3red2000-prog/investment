@@ -186,7 +186,8 @@ function parse_volatility_index_html_($html) {
       normalize_volatility_index_rate_(
         $rateNodes->item(0)->textContent,
         $i + 1,
-        $name
+        $name,
+        $change
       );
 
     /*
@@ -326,7 +327,8 @@ function normalize_volatility_index_number_(
 function normalize_volatility_index_rate_(
   $value,
   $rowNumber,
-  $indexName
+  $indexName,
+  $change
 ) {
   $text = normalize_text_((string)$value);
 
@@ -401,14 +403,64 @@ function normalize_volatility_index_rate_(
   }
 
   /*
-   * 数値が0ではないにもかかわらず、
-   * 上昇・下落の方向を判定できない場合は異常とする。
+   * 騰落率自身に上昇・下落記号がない場合は、
+   * 同じ行の前日比から方向を判定する。
+   */
+  $changeNumericText = str_replace(
+    ',',
+    '',
+    normalize_text_((string)$change)
+  );
+
+  if (
+    !preg_match(
+      '/^[+-]?\d+(?:\.\d+)?$/',
+      $changeNumericText
+    )
+  ) {
+    throw new RuntimeException(
+      "恐怖指数の騰落率方向判定用の前日比が不正です: " .
+      "row={$rowNumber}" .
+      " name={$indexName}" .
+      " rate={$text}" .
+      " change={$change}"
+    );
+  }
+
+  $changeNumber = (float)$changeNumericText;
+
+  if ($changeNumber > 0) {
+    return '+' .
+      number_format(
+        $number,
+        2,
+        '.',
+        ''
+      ) .
+      '%';
+  }
+
+  if ($changeNumber < 0) {
+    return '-' .
+      number_format(
+        $number,
+        2,
+        '.',
+        ''
+      ) .
+      '%';
+  }
+
+  /*
+   * 騰落率が0ではないにもかかわらず、
+   * 前日比も0の場合は方向を確定できないため異常終了する。
    */
   throw new RuntimeException(
     "恐怖指数の騰落率の方向を判定できません: " .
     "row={$rowNumber}" .
     " name={$indexName}" .
-    " value={$text}"
+    " rate={$text}" .
+    " change={$change}"
   );
 }
 
