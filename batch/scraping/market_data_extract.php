@@ -13,6 +13,7 @@
  *   nikkei225_contribution：日経225寄与度
  *   volatility_index：恐怖指数
  *   government_bond_yield：国債利回り
+ *   us_market_valuation：米国株バリュエーション
  *
  * 実行例:
  *   php market_data_extract.php
@@ -35,6 +36,7 @@ require __DIR__ . '/mde_short_selling_ratio.php';
 require __DIR__ . '/mde_nikkei225_contribution.php';
 require __DIR__ . '/mde_volatility_index.php';
 require __DIR__ . '/mde_government_bond_yield.php';
+require __DIR__ . '/mde_us_market_valuation.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -103,7 +105,7 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/data/us_per.php',
     'file' => '09_extract_08_us_market_valuation.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'economic_schedule' => array(
     'name' => '経済スケジュール',
@@ -345,6 +347,12 @@ try {
         case 'government_bond_yield':
           $parsed = parse_government_bond_yield_html_($html);
           $reportSection = build_government_bond_yield_message_($parsed);
+          break;
+
+        case 'us_market_valuation':
+          $parsed = parse_us_market_valuation_html_($html);
+          $reportSection =
+            build_us_market_valuation_message_($parsed);
           break;
 
         default:

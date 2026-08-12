@@ -811,6 +811,668 @@ function Add-Nikkei225ValuationExtractData {
     "lastDate=$($Value.lastDate)"
   )
 }
+
+function Add-UsMarketValuationExtractData {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Ws
+  )
+
+  Write-Host '[INFO] us market valuation DOM processing start'
+
+  $Expression = @'
+(function () {
+  var DATA_ELEMENT_ID =
+    "mde_us_market_valuation_data";
+
+  var EXPECTED_ROW_COUNT = 60;
+
+  if (!Array.isArray(window.US_DAILY)) {
+    throw new Error("US_DAILY is not available");
+  }
+
+  if (!Array.isArray(window.VOL_DAILY)) {
+    throw new Error("VOL_DAILY is not available");
+  }
+
+  if (!Array.isArray(window.DAILY)) {
+    throw new Error("DAILY is not available");
+  }
+
+  if (typeof window.gdt !== "function") {
+    throw new Error("gdt is not available");
+  }
+
+  function toNumber(value, name, rowNumber) {
+    var text =
+      value === null || value === undefined
+        ? ""
+        : String(value);
+
+    var number = Number(
+      text.replace(/,/g, "").trim()
+    );
+
+    if (!isFinite(number)) {
+      throw new Error(
+        name +
+        " is not numeric. row=" +
+        rowNumber +
+        " value=" +
+        text
+      );
+    }
+
+    return number;
+  }
+
+  function formatNumber(value, decimals) {
+    return value.toLocaleString(
+      "en-US",
+      {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+        useGrouping: true
+      }
+    );
+  }
+
+  function buildMap(rows, valueColumn) {
+    var map = {};
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+
+      if (
+        !Array.isArray(row) ||
+        row.length <= valueColumn
+      ) {
+        continue;
+      }
+
+      var value = Number(row[valueColumn]);
+
+      if (
+        !isFinite(value) ||
+        value <= 0
+      ) {
+        continue;
+      }
+
+      map[window.gdt(row[0])] = value;
+    }
+
+    return map;
+  }
+
+  /*
+   * Common values
+   *
+   * US_DAILY
+   *   [1]  DOW30 price
+   *   [2]  S&P500 price
+   *   [3]  NASDAQ100 price
+   *   [4]  Russell2000 price
+   *   [5]  DOW30 forward PER
+   *   [6]  S&P500 forward PER
+   *   [7]  NASDAQ100 forward PER
+   *   [8]  Russell2000 forward PER
+   *   [9]  DOW30 trailing PER
+   *   [10] S&P500 trailing PER
+   *   [11] NASDAQ100 trailing PER
+   *   [12] Russell2000 trailing PER
+   *   [13] DOW30 dividend yield
+   *   [14] S&P500 dividend yield
+   *   [15] NASDAQ100 dividend yield
+   *   [16] Russell2000 dividend yield
+   *
+   * VOL_DAILY
+   *   [1] Nikkei225 price
+   *
+   * DAILY
+   *   [25] Nikkei225 PER
+   *   [27] Nikkei225 dividend yield
+   */
+
+  var mapNikkeiPrice =
+    buildMap(window.VOL_DAILY, 1);
+
+  var mapNikkeiPer =
+    buildMap(window.DAILY, 25);
+
+  var mapNikkeiDividend =
+    buildMap(window.DAILY, 27);
+
+  var mapDowPrice =
+    buildMap(window.US_DAILY, 1);
+
+  var mapSp500Price =
+    buildMap(window.US_DAILY, 2);
+
+  var mapNasdaq100Price =
+    buildMap(window.US_DAILY, 3);
+
+  var mapRussell2000Price =
+    buildMap(window.US_DAILY, 4);
+
+  var mapDowDividend =
+    buildMap(window.US_DAILY, 13);
+
+  var mapSp500Dividend =
+    buildMap(window.US_DAILY, 14);
+
+  var mapNasdaq100Dividend =
+    buildMap(window.US_DAILY, 15);
+
+  var mapRussell2000Dividend =
+    buildMap(window.US_DAILY, 16);
+
+  function buildRows(mode) {
+    var dowPerColumn =
+      mode === "forward_per"
+        ? 5
+        : 9;
+
+    var sp500PerColumn =
+      mode === "forward_per"
+        ? 6
+        : 10;
+
+    var nasdaq100PerColumn =
+      mode === "forward_per"
+        ? 7
+        : 11;
+
+    var russell2000PerColumn =
+      mode === "forward_per"
+        ? 8
+        : 12;
+
+    var mapDowPer =
+      buildMap(
+        window.US_DAILY,
+        dowPerColumn
+      );
+
+    var mapSp500Per =
+      buildMap(
+        window.US_DAILY,
+        sp500PerColumn
+      );
+
+    var mapNasdaq100Per =
+      buildMap(
+        window.US_DAILY,
+        nasdaq100PerColumn
+      );
+
+    var mapRussell2000Per =
+      buildMap(
+        window.US_DAILY,
+        russell2000PerColumn
+      );
+
+    /*
+     * Follow the original page's Data_write() logic
+     * and use dates with available DOW30 PER data.
+     */
+    var dates = [];
+
+    for (
+      var i = 0;
+      i < window.US_DAILY.length;
+      i++
+    ) {
+      var sourceRow =
+        window.US_DAILY[i];
+
+      if (
+        !Array.isArray(sourceRow) ||
+        sourceRow.length <= dowPerColumn
+      ) {
+        continue;
+      }
+
+      var per =
+        Number(
+          sourceRow[dowPerColumn]
+        );
+
+      if (
+        !isFinite(per) ||
+        per <= 0
+      ) {
+        continue;
+      }
+
+      dates.push(
+        window.gdt(sourceRow[0])
+      );
+    }
+
+    dates.sort();
+
+    /*
+     * The original page reverses DOWper,
+     * takes up to 65 of the latest entries,
+     * and then sorts them by date in descending order.
+     *
+     * Use the latest 60 entries in the final result.
+     */
+    dates =
+      dates.slice(
+        Math.max(
+          0,
+          dates.length - 65
+        )
+      );
+
+    dates.sort(function (a, b) {
+      if (a < b) {
+        return 1;
+      }
+
+      if (a > b) {
+        return -1;
+      }
+
+      return 0;
+    });
+
+    dates =
+      dates.slice(
+        0,
+        EXPECTED_ROW_COUNT
+      );
+
+    if (
+      dates.length !==
+      EXPECTED_ROW_COUNT
+    ) {
+      throw new Error(
+        mode +
+        " date count is not 60: " +
+        dates.length
+      );
+    }
+
+    var result = [];
+
+    for (
+      var index = 0;
+      index < dates.length;
+      index++
+    ) {
+      var date = dates[index];
+      var rowNumber = index + 1;
+
+      var requiredValues = {
+        nikkei225_price:
+          mapNikkeiPrice[date],
+
+        nikkei225_per:
+          mapNikkeiPer[date],
+
+        nikkei225_dividend_yield:
+          mapNikkeiDividend[date],
+
+        dow30_price:
+          mapDowPrice[date],
+
+        dow30_per:
+          mapDowPer[date],
+
+        dow30_dividend_yield:
+          mapDowDividend[date],
+
+        sp500_price:
+          mapSp500Price[date],
+
+        sp500_per:
+          mapSp500Per[date],
+
+        sp500_dividend_yield:
+          mapSp500Dividend[date],
+
+        nasdaq100_price:
+          mapNasdaq100Price[date],
+
+        nasdaq100_per:
+          mapNasdaq100Per[date],
+
+        nasdaq100_dividend_yield:
+          mapNasdaq100Dividend[date],
+
+        russell2000_price:
+          mapRussell2000Price[date],
+
+        russell2000_per:
+          mapRussell2000Per[date],
+
+        russell2000_dividend_yield:
+          mapRussell2000Dividend[date]
+      };
+
+      Object.keys(
+        requiredValues
+      ).forEach(function (key) {
+        var value =
+          requiredValues[key];
+
+        if (
+          value === undefined ||
+          value === null ||
+          !isFinite(Number(value))
+        ) {
+          throw new Error(
+            key +
+            " is missing. row=" +
+            rowNumber +
+            " date=" +
+            date
+          );
+        }
+      });
+
+      result.push({
+        date:
+          date,
+
+        nikkei225_price:
+          formatNumber(
+            toNumber(
+              requiredValues.nikkei225_price,
+              "nikkei225_price",
+              rowNumber
+            ),
+            2
+          ),
+
+        nikkei225_per:
+          formatNumber(
+            toNumber(
+              requiredValues.nikkei225_per,
+              "nikkei225_per",
+              rowNumber
+            ),
+            2
+          ),
+
+        nikkei225_dividend_yield:
+          formatNumber(
+            toNumber(
+              requiredValues.nikkei225_dividend_yield,
+              "nikkei225_dividend_yield",
+              rowNumber
+            ),
+            2
+          ),
+
+        dow30_price:
+          formatNumber(
+            toNumber(
+              requiredValues.dow30_price,
+              "dow30_price",
+              rowNumber
+            ),
+            2
+          ),
+
+        dow30_per:
+          formatNumber(
+            toNumber(
+              requiredValues.dow30_per,
+              "dow30_per",
+              rowNumber
+            ),
+            2
+          ),
+
+        dow30_dividend_yield:
+          formatNumber(
+            toNumber(
+              requiredValues.dow30_dividend_yield,
+              "dow30_dividend_yield",
+              rowNumber
+            ),
+            2
+          ),
+
+        sp500_price:
+          formatNumber(
+            toNumber(
+              requiredValues.sp500_price,
+              "sp500_price",
+              rowNumber
+            ),
+            2
+          ),
+
+        sp500_per:
+          formatNumber(
+            toNumber(
+              requiredValues.sp500_per,
+              "sp500_per",
+              rowNumber
+            ),
+            2
+          ),
+
+        sp500_dividend_yield:
+          formatNumber(
+            toNumber(
+              requiredValues.sp500_dividend_yield,
+              "sp500_dividend_yield",
+              rowNumber
+            ),
+            2
+          ),
+
+        nasdaq100_price:
+          formatNumber(
+            toNumber(
+              requiredValues.nasdaq100_price,
+              "nasdaq100_price",
+              rowNumber
+            ),
+            2
+          ),
+
+        nasdaq100_per:
+          formatNumber(
+            toNumber(
+              requiredValues.nasdaq100_per,
+              "nasdaq100_per",
+              rowNumber
+            ),
+            2
+          ),
+
+        nasdaq100_dividend_yield:
+          formatNumber(
+            toNumber(
+              requiredValues.nasdaq100_dividend_yield,
+              "nasdaq100_dividend_yield",
+              rowNumber
+            ),
+            2
+          ),
+
+        russell2000_price:
+          formatNumber(
+            toNumber(
+              requiredValues.russell2000_price,
+              "russell2000_price",
+              rowNumber
+            ),
+            2
+          ),
+
+        russell2000_per:
+          formatNumber(
+            toNumber(
+              requiredValues.russell2000_per,
+              "russell2000_per",
+              rowNumber
+            ),
+            2
+          ),
+
+        russell2000_dividend_yield:
+          formatNumber(
+            toNumber(
+              requiredValues.russell2000_dividend_yield,
+              "russell2000_dividend_yield",
+              rowNumber
+            ),
+            2
+          )
+      });
+    }
+
+    return result;
+  }
+
+  var forwardPerRows =
+    buildRows("forward_per");
+
+  var trailingPerRows =
+    buildRows("trailing_per");
+
+  if (
+    forwardPerRows.length !==
+    EXPECTED_ROW_COUNT
+  ) {
+    throw new Error(
+      "forward PER row count is not 60: " +
+      forwardPerRows.length
+    );
+  }
+
+  if (
+    trailingPerRows.length !==
+    EXPECTED_ROW_COUNT
+  ) {
+    throw new Error(
+      "trailing PER row count is not 60: " +
+      trailingPerRows.length
+    );
+  }
+
+  for (
+    var j = 0;
+    j < EXPECTED_ROW_COUNT;
+    j++
+  ) {
+    if (
+      forwardPerRows[j].date !==
+      trailingPerRows[j].date
+    ) {
+      throw new Error(
+        "date mismatch. row=" +
+        (j + 1) +
+        " forward=" +
+        forwardPerRows[j].date +
+        " trailing=" +
+        trailingPerRows[j].date
+      );
+    }
+  }
+
+  var existing =
+    document.getElementById(
+      DATA_ELEMENT_ID
+    );
+
+  if (existing) {
+    existing.parentNode.removeChild(
+      existing
+    );
+  }
+
+  var script =
+    document.createElement("script");
+
+  script.id =
+    DATA_ELEMENT_ID;
+
+  script.type =
+    "application/json";
+
+  script.textContent =
+    JSON.stringify({
+      forward_per:
+        forwardPerRows,
+
+      trailing_per:
+        trailingPerRows
+    });
+
+  document.body.appendChild(script);
+
+  return {
+    forwardPerCount:
+      forwardPerRows.length,
+
+    trailingPerCount:
+      trailingPerRows.length,
+
+    firstDate:
+      forwardPerRows[0].date,
+
+    lastDate:
+      forwardPerRows[
+        forwardPerRows.length - 1
+      ].date
+  };
+})()
+'@
+
+  $Res = Invoke-Cdp $Ws 7 'Runtime.evaluate' @{
+    expression = $Expression
+    returnByValue = $true
+  }
+
+  if ($Res.result.exceptionDetails -ne $null) {
+    $Description = ''
+
+    if (
+      $Res.result.exceptionDetails.exception -ne $null -and
+      $Res.result.exceptionDetails.exception.description -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.exception.description
+    } elseif (
+      $Res.result.exceptionDetails.text -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.text
+    }
+
+    throw (
+      'us market valuation DOM processing failed: ' +
+      $Description
+    )
+  }
+
+  $Value =
+    $Res.result.result.value
+
+  if ($Value -eq $null) {
+    throw (
+      'us market valuation DOM processing returned no result'
+    )
+  }
+
+  Write-Host (
+    '[INFO] us market valuation DOM ready: ' +
+    "forwardPer=$($Value.forwardPerCount) " +
+    "trailingPer=$($Value.trailingPerCount) " +
+    "firstDate=$($Value.firstDate) " +
+    "lastDate=$($Value.lastDate)"
+  )
+}
+
 function Get-Html-From-Edge {
   param(
     $Port,
@@ -861,12 +1523,17 @@ function Get-Html-From-Edge {
           -Ws $Ws
       }
 
+      '09_extract_08_us_market_valuation.html' {
+        Add-UsMarketValuationExtractData `
+          -Ws $Ws
+      }
+
       default {
         # No target-specific DOM processing.
       }
     }
 
-    # CDP ID 5 is reserved for the valuation preprocessing.
+    # CDP IDs 5 and 7 are reserved for target-specific preprocessing.
     $Res = Invoke-Cdp $Ws 6 'Runtime.evaluate' @{
       expression = 'document.documentElement.outerHTML'
       returnByValue = $true

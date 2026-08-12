@@ -454,6 +454,279 @@ const fs = require('fs');
       );
     }
   }
+  
+  // nikkei225jp.com 米国株バリュエーション
+  //
+  // 当該ページでは、予想PERと実績PERが同じ表
+  // #datatblへ切り替えて表示される。
+  //
+  // 両方の表を順番に取得し、PHP解析用のJSONを
+  // script#mde_us_market_valuation_dataとしてDOMへ追加する。
+  const isUsMarketValuation =
+    /^https:\/\/nikkei225jp\.com\/data\/us_per\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isUsMarketValuation) {
+    try {
+      /*
+       * 初期表示の表が完成するまで待つ。
+       */
+      await page.waitForFunction(
+        () => {
+          const table = document.querySelector('#datatbl');
+
+          if (!table) {
+            return false;
+          }
+
+          const rows = Array.from(
+            table.querySelectorAll('tbody > tr')
+          ).filter(row => row.querySelectorAll('td').length === 16);
+
+          return (
+            rows.length === 60 &&
+            rows.every(row => {
+              const cells = row.querySelectorAll('td');
+
+              return (
+                cells.length === 16 &&
+                (cells[0].textContent || '').trim() !== '' &&
+                (cells[1].textContent || '').trim() !== '' &&
+                (cells[2].textContent || '').trim() !== '' &&
+                (cells[4].textContent || '').trim() !== '' &&
+                (cells[5].textContent || '').trim() !== ''
+              );
+            })
+          );
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      /*
+       * 現在表示されている#datatblから、
+       * 60営業日分の16項目を取得する関数。
+       */
+      const extractUsMarketValuationRows = async () => {
+        return await page.evaluate(() => {
+          const table = document.querySelector('#datatbl');
+
+          if (!table) {
+            throw new Error(
+              '米国株バリュエーションの表#datatblがありません。'
+            );
+          }
+
+          const tableRows = Array.from(
+            table.querySelectorAll('tbody > tr')
+          ).filter(row => row.querySelectorAll('td').length === 16);
+
+          return tableRows.map((row, index) => {
+            const cells = Array.from(
+              row.querySelectorAll('td')
+            );
+
+            if (cells.length !== 16) {
+              throw new Error(
+                '米国株バリュエーションの列数が16列ではありません。' +
+                ` row=${index + 1} cells=${cells.length}`
+              );
+            }
+
+            const text = cell =>
+              (cell.textContent || '')
+                .replace(/\u00a0/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            return {
+              date: text(cells[0]),
+
+              nikkei225_price: text(cells[1]),
+              nikkei225_per: text(cells[2]),
+              nikkei225_dividend_yield: text(cells[3]),
+
+              dow30_price: text(cells[4]),
+              dow30_per: text(cells[5]),
+              dow30_dividend_yield: text(cells[6]),
+
+              sp500_price: text(cells[7]),
+              sp500_per: text(cells[8]),
+              sp500_dividend_yield: text(cells[9]),
+
+              nasdaq100_price: text(cells[10]),
+              nasdaq100_per: text(cells[11]),
+              nasdaq100_dividend_yield: text(cells[12]),
+
+              russell2000_price: text(cells[13]),
+              russell2000_per: text(cells[14]),
+              russell2000_dividend_yield: text(cells[15]),
+            };
+          });
+        });
+      };
+
+      /*
+       * ラジオボタンを切り替え、
+       * ページ側のonclick処理で表を更新する。
+       *
+       * value=0：予想PER
+       * value=1：実績PER
+       */
+      const selectUsMarketValuationBasis = async value => {
+        await page.evaluate(selectedValue => {
+          const input = document.querySelector(
+            `input[name="typeT1"][value="${selectedValue}"]`
+          );
+
+          if (!input) {
+            throw new Error(
+              '米国株バリュエーションの切替ボタンがありません: ' +
+              selectedValue
+            );
+          }
+
+          /*
+           * inputはCSSで非表示になっているため、
+           * Playwrightの通常clickではなくDOM上でclickする。
+           */
+          input.click();
+        }, value);
+
+        await page.waitForFunction(
+          selectedValue => {
+            const input = document.querySelector(
+              `input[name="typeT1"][value="${selectedValue}"]`
+            );
+
+            if (!input || !input.checked) {
+              return false;
+            }
+
+            const table = document.querySelector('#datatbl');
+
+            if (!table) {
+              return false;
+            }
+
+            const rows = Array.from(
+              table.querySelectorAll('tbody > tr')
+            ).filter(
+              row => row.querySelectorAll('td').length === 16
+            );
+
+            return (
+              rows.length === 60 &&
+              rows.every(row => {
+                const cells =
+                  row.querySelectorAll('td');
+
+                return (
+                  cells.length === 16 &&
+                  (cells[0].textContent || '').trim() !== '' &&
+                  (cells[1].textContent || '').trim() !== '' &&
+                  (cells[2].textContent || '').trim() !== '' &&
+                  (cells[4].textContent || '').trim() !== '' &&
+                  (cells[5].textContent || '').trim() !== ''
+                );
+              })
+            );
+          },
+          value,
+          {
+            timeout: 30_000,
+          }
+        );
+
+        /*
+         * ページ側のData_write()によるDOM書換え完了を
+         * 確実に待つための短い待機。
+         */
+        await page.waitForTimeout(300);
+      };
+
+      /*
+       * 予想PERを取得する。
+       */
+      await selectUsMarketValuationBasis('0');
+
+      const forwardPerRows =
+        await extractUsMarketValuationRows();
+
+      /*
+       * 実績PERを取得する。
+       */
+      await selectUsMarketValuationBasis('1');
+
+      const trailingPerRows =
+        await extractUsMarketValuationRows();
+
+      if (forwardPerRows.length !== 60) {
+        throw new Error(
+          '予想PERの取得件数が60件ではありません: ' +
+          forwardPerRows.length
+        );
+      }
+
+      if (trailingPerRows.length !== 60) {
+        throw new Error(
+          '実績PERの取得件数が60件ではありません: ' +
+          trailingPerRows.length
+        );
+      }
+
+      /*
+       * PHP解析用JSONをHTMLへ埋め込む。
+       *
+       * 既に同じ要素が存在する場合は削除してから作り直す。
+       */
+      await page.evaluate(
+        data => {
+          const elementId =
+            'mde_us_market_valuation_data';
+
+          const existing =
+            document.getElementById(elementId);
+
+          if (existing) {
+            existing.remove();
+          }
+
+          const script =
+            document.createElement('script');
+
+          script.id = elementId;
+          script.type = 'application/json';
+          script.textContent = JSON.stringify(data);
+
+          document.body.appendChild(script);
+        },
+        {
+          forward_per: forwardPerRows,
+          trailing_per: trailingPerRows,
+        }
+      );
+
+      console.log(
+        '[INFO] us market valuation dynamic DOM ready: ' +
+        `forwardPer=${forwardPerRows.length} ` +
+        `trailingPer=${trailingPerRows.length}`
+      );
+
+    } catch (e) {
+      /*
+       * 専用PHPがJSON必須としているため、
+       * 警告だけで続行せずfetch_dom.js自体を失敗させる。
+       */
+      throw new Error(
+        '米国株バリュエーションの動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+  
   // --- ここまで改修ポイント ---
 
   const html = await page.content();
