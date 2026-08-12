@@ -14,6 +14,7 @@
  *   volatility_index：恐怖指数
  *   government_bond_yield：国債利回り
  *   us_market_valuation：米国株バリュエーション
+ *   economic_schedule：経済スケジュール
  *
  * 実行例:
  *   php market_data_extract.php
@@ -37,6 +38,7 @@ require __DIR__ . '/mde_nikkei225_contribution.php';
 require __DIR__ . '/mde_volatility_index.php';
 require __DIR__ . '/mde_government_bond_yield.php';
 require __DIR__ . '/mde_us_market_valuation.php';
+require __DIR__ . '/mde_economic_schedule.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -112,7 +114,7 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/schedule/',
     'file' => '09_extract_09_economic_schedule.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
 );
 
@@ -353,6 +355,20 @@ try {
           $parsed = parse_us_market_valuation_html_($html);
           $reportSection =
             build_us_market_valuation_message_($parsed);
+          break;
+
+        case 'economic_schedule':
+          $parsed =
+            parse_economic_schedule_html_(
+              $html,
+              $targetYmd
+            );
+
+          $reportSection =
+            build_economic_schedule_message_(
+              $parsed,
+              $isIndividual
+            );
           break;
 
         default:
