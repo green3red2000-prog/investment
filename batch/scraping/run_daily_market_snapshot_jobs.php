@@ -26,6 +26,7 @@ declare(strict_types=1);
   *     pts_morning_news.php
   *     zenmeigara_shikiho.php --mode=check
   *     market_data_extract.php --source=file --target=ALL
+  *     market_data_extract.php --source=file --target=economic_schedule
   *
   *   - 完了マーカーファイルは削除せず、そのまま残す
   *
@@ -45,6 +46,7 @@ declare(strict_types=1);
   *     pts_morning_news.php 2026-06-15 --force
   *     zenmeigara_shikiho.php 2026-06-15 --mode=check
   *     market_data_extract.php --date=2026-06-15 --source=file --target=ALL
+  *     market_data_extract.php --date=2026-06-15 --source=file --target=economic_schedule
   *   
   *   ※リカバリ起動時は、日付付きの完了マーカーファイルが無くても動作します。
   * ログ：
@@ -212,6 +214,15 @@ if ($mode === '000') {
           '--target=ALL'
         ]
       ],
+      	  
+      [
+        'market_data_extract.php',
+        [
+          "--date={$targetDate}",
+          '--source=file',
+          '--target=economic_schedule'
+        ]
+      ],
     ];
   } else {
     $jobs = [
@@ -250,6 +261,14 @@ if ($mode === '000') {
         [
           '--source=file',
           '--target=ALL'
+        ]
+      ],
+      	  
+      [
+        'market_data_extract.php',
+        [
+          '--source=file',
+          '--target=economic_schedule'
         ]
       ],
     ];
