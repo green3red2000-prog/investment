@@ -16,6 +16,7 @@ function postProcess_messages_5minTrigger() {
     analysisMasterName: '全銘柄日足分析マスタ',
     securityCodeMasterName: '証券コードマスタ',
     calendarMasterName: 'カレンダーマスタ',
+    economicScheduleMasterName: '経済スケジュールマスタ',
 
     // ★追加：本日のニュース（最新）
     todaysNewsLatestName: '本日のニュース_最新',
@@ -46,10 +47,12 @@ function postProcess_messages_5minTrigger() {
       '全銘柄日足分析_メッセージ_',
       '大量保有速報_メッセージ_',
       '市況関連データ抽出_ALL_メッセージ_',
+      '市況関連データ抽出_GROUP1_メッセージ_',
+      '市況関連データ抽出＃経済スケジュール_メッセージ_',      
     ],
 
     // ★追加：コピーしないプレフィックス
-    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '四季報情報更新監視', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析','市況関連データ抽出_ALL']),
+    noCopyPrefixes: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得', '証券コード取得', 'カレンダー取得', '四季報情報更新監視', '指数日足取得', '全銘柄日足取得', '全銘柄日足分析', '市況関連データ抽出_ALL', '市況関連データ抽出_GROUP1', '市況関連データ抽出＃経済スケジュール']),
     
     // ★追加：マスタ更新するプレフィックス
     needsBaseInfoMasterUpdate: new Set(['全銘柄基本情報取得', '全銘柄四季報情報取得']),
@@ -333,10 +336,13 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
 
   const { basePrefix, dateStr, sheetName } = parsed;
 
-  // 市況関連データ抽出_ALL はスプレッドシートを使用せず、
+  // 市況関連データ抽出_ALL / GROUP1 はスプレッドシートを使用せず、
   // 対応するレポートTXTのURLをメール本文に付加して送信する
-  if (basePrefix === '市況関連データ抽出_ALL') {
-    const reportName = `市況関連データ抽出_ALL_レポート_${dateStr}.txt`;
+  if (
+    basePrefix === '市況関連データ抽出_ALL' ||
+    basePrefix === '市況関連データ抽出_GROUP1'
+  ) {
+    const reportName = `${basePrefix}_レポート_${dateStr}.txt`;
     const reportFiles = srcFolder.getFilesByName(reportName);
 
     if (!reportFiles.hasNext()) {
@@ -349,6 +355,46 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
     const bodyText = msgFile.getBlob().getDataAsString('UTF-8');
     const subject = `${basePrefix}_${dateStr}`;
     const mailBody = bodyText + '\n\n' + reportFile.getUrl();
+
+    GmailApp.sendEmail(CONFIG.mailTo, subject, mailBody);
+
+    // 対象のメッセージファイル削除
+    msgFile.setTrashed(true);
+
+    console.log(`完了: ${msgName}`);
+    return;
+  }
+
+  // 市況関連データ抽出＃経済スケジュール
+  // レポートTXT（タブ区切り）から経済スケジュールマスタを更新する
+  if (basePrefix === '市況関連データ抽出＃経済スケジュール') {
+    const reportName =
+      `市況関連データ抽出＃経済スケジュール_レポート_${dateStr}.txt`;
+    const reportFiles = srcFolder.getFilesByName(reportName);
+
+    if (!reportFiles.hasNext()) {
+      console.log(
+        `スキップ（対応レポート未発見）: ` +
+        `msg=${msgName} / report=${reportName}`
+      );
+      return;
+    }
+
+    const reportFile = reportFiles.next();
+
+    const result =
+      syncAndUpdateEconomicScheduleMaster_(reportFile, CONFIG);
+
+    const bodyText = msgFile.getBlob().getDataAsString('UTF-8');
+    const subject = `${basePrefix}_${dateStr}`;
+
+    const mailBody =
+      bodyText + '\n\n' +
+      reportFile.getUrl() + '\n\n' +
+      `経済スケジュールマスタ更新状況\n` +
+      `更新: ${result.updatedRows}件\n` +
+      `追加: ${result.insertedRows}件\n\n` +
+      `経済スケジュールマスタ\n${result.masterUrl}`;
 
     GmailApp.sendEmail(CONFIG.mailTo, subject, mailBody);
 
@@ -1564,5 +1610,228 @@ function getAnalysisHeaderMap_(sheet) {
   return {
     headers: headers,
     map: map,
+  };
+}
+
+/**
+ * 市況関連データ抽出＃経済スケジュールの
+ * レポートTXT（タブ区切り）から「経済スケジュールマスタ」を更新する。
+ *
+ * 突合キー：
+ *   日付 / 国 / 期間 / 指標名
+ *
+ * - masterにありsrcにもある → srcの値で上書き
+ * - masterにありsrcにない   → 何もしない
+ * - masterになくsrcにある   → master末尾へ追加
+ * - 最後に「日付」の降順でソート
+ */
+function syncAndUpdateEconomicScheduleMaster_(reportFile, CONFIG) {
+  const masterFolder = getFolderByPath_(CONFIG.masterFolderPath);
+  const masterFile = findSpreadsheetByExactNameInFolder_(
+    masterFolder,
+    CONFIG.economicScheduleMasterName
+  );
+
+  if (!masterFile) {
+    throw new Error(
+      `経済スケジュールマスタ未発見: ` +
+      `${CONFIG.masterFolderPath.join(' / ')} / ${CONFIG.economicScheduleMasterName}`
+    );
+  }
+
+  const masterSs = SpreadsheetApp.openById(masterFile.getId());
+  const masterSheet = masterSs.getSheets()[0];
+
+  if (!masterSheet) {
+    throw new Error('経済スケジュールマスタ: 対象シートが見つかりません。');
+  }
+
+  // UTF-8のタブ区切りTXTを読み込む
+  const text = reportFile.getBlob().getDataAsString('UTF-8').replace(/^\uFEFF/, '');
+  const lines = text.split(/\r?\n/);
+
+  // 「日付」を含む行をヘッダ行として特定
+  const headerLineIndex = lines.findIndex(line => {
+    const cols = line.split('\t').map(v => String(v ?? '').trim());
+    return cols.includes('日付');
+  });
+
+  if (headerLineIndex < 0) {
+    throw new Error(
+      '市況関連データ抽出＃経済スケジュール: 見出し行「日付」が見つかりません。'
+    );
+  }
+
+  const tsvText = lines.slice(headerLineIndex).join('\n');
+  const srcAll = Utilities.parseCsv(tsvText, '\t');
+
+  if (srcAll.length < 2) {
+    console.log('[経済スケジュールマスタ更新] スキップ: 取得データなし');
+    return {
+      updatedRows: 0,
+      insertedRows: 0,
+      masterUrl: masterSs.getUrl(),
+    };
+  }
+
+  const srcHeaders = srcAll[0].map(v => String(v ?? '').trim());
+  const srcData = srcAll.slice(1).filter(row =>
+    row.some(v => String(v ?? '').trim() !== '')
+  );
+
+  const mstLastRow = masterSheet.getLastRow();
+  const mstLastCol = masterSheet.getLastColumn();
+
+  if (mstLastRow < 1 || mstLastCol < 1) {
+    throw new Error('経済スケジュールマスタ: ヘッダ行が見つかりません。');
+  }
+
+  const mstAll = masterSheet
+    .getRange(1, 1, mstLastRow, mstLastCol)
+    .getValues();
+
+  const mstHeaders = mstAll[0].map(v => String(v ?? '').trim());
+
+  const srcHeaderToIdx = {};
+  srcHeaders.forEach((h, i) => {
+    if (h) srcHeaderToIdx[h] = i;
+  });
+
+  const mstHeaderToIdx = {};
+  mstHeaders.forEach((h, i) => {
+    if (h) mstHeaderToIdx[h] = i;
+  });
+
+  const keyHeaders = ['日付', '国', '期間', '指標名'];
+
+  for (const h of keyHeaders) {
+    if (srcHeaderToIdx[h] == null) {
+      throw new Error(
+        `市況関連データ抽出＃経済スケジュール: 見出し「${h}」が見つかりません。`
+      );
+    }
+
+    if (mstHeaderToIdx[h] == null) {
+      throw new Error(
+        `経済スケジュールマスタ: 見出し「${h}」が見つかりません。`
+      );
+    }
+  }
+
+  const commonHeaders = srcHeaders.filter(
+    h => h && mstHeaderToIdx[h] != null
+  );
+
+  // 日付を突合・ソート用に正規化
+  const dateKey = (v) => {
+    if (v instanceof Date) {
+      return Utilities.formatDate(
+        v,
+        Session.getScriptTimeZone(),
+        'yyyy-MM-dd'
+      );
+    }
+
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+
+    const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (m) {
+      return [
+        m[1],
+        String(m[2]).padStart(2, '0'),
+        String(m[3]).padStart(2, '0'),
+      ].join('-');
+    }
+
+    return s;
+  };
+
+  const makeKey = (row, headerToIdx) => {
+    return keyHeaders.map(h => {
+      const v = row[headerToIdx[h]];
+      return h === '日付'
+        ? dateKey(v)
+        : String(v ?? '').trim();
+    }).join('\u0001');
+  };
+
+  // masterの複合キー → 行番号
+  const keyToMasterRow = new Map();
+
+  for (let r = 1; r < mstAll.length; r++) {
+    const key = makeKey(mstAll[r], mstHeaderToIdx);
+    if (!keyToMasterRow.has(key)) {
+      keyToMasterRow.set(key, r);
+    }
+  }
+
+  let updatedRows = 0;
+  let insertedRows = 0;
+
+  for (const srcRow of srcData) {
+    const key = makeKey(srcRow, srcHeaderToIdx);
+    const mstRow = keyToMasterRow.get(key);
+
+    if (mstRow != null) {
+      // 既存行を上書き更新
+      for (const h of commonHeaders) {
+        mstAll[mstRow][mstHeaderToIdx[h]] =
+          srcRow[srcHeaderToIdx[h]];
+      }
+
+      updatedRows++;
+      continue;
+    }
+
+    // 新規行追加
+    const newRow = new Array(mstHeaders.length).fill('');
+
+    for (const h of commonHeaders) {
+      newRow[mstHeaderToIdx[h]] =
+        srcRow[srcHeaderToIdx[h]];
+    }
+
+    mstAll.push(newRow);
+    keyToMasterRow.set(key, mstAll.length - 1);
+    insertedRows++;
+  }
+
+  // ヘッダを除き「日付」降順
+  const headerRow = mstAll[0];
+  const dataRows = mstAll.slice(1);
+  const dateIdxM = mstHeaderToIdx['日付'];
+
+  dataRows.sort((a, b) => {
+    const dateA = dateKey(a[dateIdxM]);
+    const dateB = dateKey(b[dateIdxM]);
+    return dateB.localeCompare(dateA);
+  });
+
+  const finalRows = [headerRow, ...dataRows];
+
+  // 既存内容をクリアして再配置
+  masterSheet
+    .getRange(
+      1,
+      1,
+      Math.max(mstLastRow, finalRows.length),
+      mstLastCol
+    )
+    .clearContent();
+
+  masterSheet
+    .getRange(1, 1, finalRows.length, mstLastCol)
+    .setValues(finalRows);
+
+  console.log(
+    `[経済スケジュールマスタ更新] 完了: ` +
+    `更新=${updatedRows}, 追加=${insertedRows}`
+  );
+
+  return {
+    updatedRows,
+    insertedRows,
+    masterUrl: masterSs.getUrl(),
   };
 }
