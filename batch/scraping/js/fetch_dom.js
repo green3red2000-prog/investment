@@ -156,6 +156,117 @@ const fs = require('fs');
   const isToshoSectorIndex =
     /^https:\/\/nikkei225jp\.com\/chart\/gyoushu\.php(?:[?#].*)?$/i.test(url);
 
+  const isGovernmentBondYield =
+    /^https:\/\/nikkei225jp\.com\/bond\/(?:[?#].*)?$/i.test(
+    url
+  );
+
+  if (isGovernmentBondYield) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const table =
+            document.querySelector('#ajaxTbl');
+
+          if (!table) {
+            return false;
+          }
+
+          const rows = Array.from(
+            table.querySelectorAll(
+              'tbody > tr'
+            )
+          ).filter(row => {
+            return (
+              row.querySelector('th') !== null &&
+              row.querySelector('td') !== null
+            );
+          });
+
+          if (rows.length === 0) {
+            return false;
+          }
+
+          /*
+           * Each target row must have the values
+           * required by mde_government_bond_yield.php.
+           */
+          return rows.every(row => {
+            const name =
+              row.querySelector('th .THp');
+
+            const currentValue =
+              row.querySelector('td .val4');
+
+            const change =
+              row.querySelector('td .zen4');
+
+            const rate =
+              row.querySelector('td .chg4');
+
+            const updated =
+              row.querySelector(
+                'td .tim4 .scol'
+              );
+
+            if (
+              !name ||
+              !currentValue ||
+              !change ||
+              !rate ||
+              !updated
+            ) {
+              return false;
+            }
+
+            const nameText =
+              (name.textContent || '').trim();
+
+            const currentValueText =
+              (currentValue.textContent || '')
+                .trim();
+
+            const changeText =
+              (change.textContent || '')
+                .trim();
+
+            const rateText =
+              (rate.textContent || '')
+                .trim();
+
+            const updatedText =
+              (updated.textContent || '')
+                .trim();
+
+            return (
+              nameText !== '' &&
+              currentValueText !== '' &&
+              changeText !== '' &&
+              updatedText !== '' &&
+              (
+                nameText === 'FFレート' ||
+                rateText !== ''
+              )
+            );
+          });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] government bond yield dynamic DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        'government bond yield dynamic DOM processing failed: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
   if (isToshoSectorIndex) {
     try {
       await page.waitForFunction(

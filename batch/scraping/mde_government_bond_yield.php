@@ -186,12 +186,24 @@ function parse_government_bond_yield_html_($html) {
       );
     }
 
-    $rate =
-      normalize_government_bond_yield_rate_(
-        $rateNodes->item(0)->textContent,
-        $rowNumber,
-        $name
+    $rateText =
+      normalize_text_(
+        $rateNodes->item(0)->textContent
       );
+
+    if (
+      $name === 'FFレート' &&
+      $rateText === ''
+    ) {
+      $rate = '0.00%';
+    } else {
+      $rate =
+        normalize_government_bond_yield_rate_(
+          $rateText,
+          $rowNumber,
+          $name
+        );
+    }
 
     /*
      * 更新日
