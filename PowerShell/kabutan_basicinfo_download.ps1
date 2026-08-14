@@ -1,4 +1,4 @@
-# Debug mode: 1 = local check only, 0 = normal download
+﻿# Debug mode: 1 = local check only, 0 = normal download
 $TestMode = 0
 $TestHtmlPath = 'C:\work\share\development\investment\data\kabutan\basicinfo\20260614\01_basicinfo_7203_kabutan_basicinfo.html'
 

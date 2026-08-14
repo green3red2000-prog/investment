@@ -158,7 +158,7 @@ try {
         WAIT_MARKER_SCRIPT,
         [
             '--gdrive=' . $securityMasterMarker,
-            '--timeout=160',
+            '--timeout=210',
             '--interval=30',
             '--optional=0',
         ]
@@ -197,7 +197,7 @@ try {
         WAIT_MARKER_SCRIPT,
         [
             '--gdrive=' . $calendarMarker,
-            '--timeout=160',
+            '--timeout=210',
             '--interval=30',
             '--optional=0',
         ]
@@ -237,7 +237,7 @@ try {
         WAIT_MARKER_SCRIPT,
         [
             '--path=' . $snapshotMarkerPath000,
-            '--timeout=160',
+            '--timeout=210',
             '--interval=30',
             '--optional=1',
         ]
@@ -304,7 +304,7 @@ try {
         WAIT_MARKER_SCRIPT,
         [
             '--path=' . $snapshotMarkerPath001,
-            '--timeout=160',
+            '--timeout=210',
             '--interval=30',
             '--optional=1',
         ]

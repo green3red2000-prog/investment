@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true, Position = 0)]
   [ValidateSet('000', '001')]
   [string]$Mode
@@ -6,6 +6,8 @@ param(
 
 # Debug mode: 1 = local check only, 0 = normal download
 # Test check number
+# 起動例
+# powershell -ExecutionPolicy Bypass -File .\daily_market_snapshot.ps1 001
 
 $TestMode = 0
 $TestCheck = 6
@@ -19,7 +21,7 @@ $SaveRoot = 'C:\work\share\development\investment\data\kabutan\daily_market_snap
 
 # Target file prefix.
 # Leave blank to download all files allowed by Mode.
-# Available values: 01 through 09.
+# Available values: 01 through 10.
 # Multiple values are not supported.
 $TargetFile = ''
 
@@ -264,7 +266,22 @@ $Items = @(
   @{ Url = 'https://nikkei225jp.com/data/vix.php'; File = '09_extract_06_volatility_index.html'; Check = 0 },
   @{ Url = 'https://nikkei225jp.com/bond/'; File = '09_extract_07_government_bond_yield.html'; Check = 0 },
   @{ Url = 'https://nikkei225jp.com/data/us_per.php'; File = '09_extract_08_us_market_valuation.html'; Check = 0 },
-  @{ Url = 'https://nikkei225jp.com/schedule/'; File = '09_extract_09_economic_schedule.html'; Check = 0 }
+  @{ Url = 'https://nikkei225jp.com/schedule/'; File = '09_extract_09_economic_schedule.html'; Check = 0 },
+  @{ Url = 'https://www.jpx.co.jp/'; File = '09_extract_10_jpx_home.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/sinyou.php'; File = '09_extract_11_margin_balance_profit_loss.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/new.php'; File = '09_extract_12_new_high_low.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/shutai.php'; File = '09_extract_13_investor_type_trading.html'; Check = 0 },
+  @{ Url = 'https://kabutan.jp/info/accessranking/3_2'; File = '09_extract_14_kabutan_theme_access_ranking.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/data/buffett.php'; File = '09_extract_15_global_buffett_indicator.html'; Check = 0 },
+  @{ Url = 'https://fred.stlouisfed.org/series/WALCL'; File = '09_extract_16_fed_total_assets.html'; Check = 0 },
+  @{ Url = 'https://fred.stlouisfed.org/series/BAMLH0A0HYM2'; File = '09_extract_17_us_high_yield_spread.html'; Check = 0 },
+  @{ Url = 'https://www.atlantafed.org/research-and-data/data/gdpnow'; File = '09_extract_18_gdpnow.html'; Check = 0 },
+  @{ Url = 'https://nikkei225jp.com/'; File = '09_extract_19_global_market_realtime.html'; Check = 0 },
+
+  @{ Url = 'https://www.jpx.co.jp/markets/statistics-equities/program/index.html'; File = '10_download_01_jpx_arbitrage_daily.xls';  Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = '裁定取引の状況（日別）' },
+  @{ Url = 'https://www.jpx.co.jp/markets/statistics-equities/program/01.html'; File = '10_download_02_jpx_program_trading_weekly.xls'; Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = 'プログラム売買の状況（週間）' },
+  @{ Url = 'https://www.boj.or.jp/statistics/boj/fm/juq/index.htm'; File = '10_download_03_boj_current_account_final.xlsx'; Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = '公表データ（確報）' },
+  @{ Url = 'https://www.boj.or.jp/statistics/boj/fm/ope/index.htm'; File = '10_download_04_boj_operation_offer_results.xlsx'; Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = 'オファー／落札結果' }
 )
 
 Write-Host "[DEBUG] script path = $PSCommandPath"
@@ -274,7 +291,7 @@ Write-Host "[DEBUG] TestCheck = $TestCheck"
 # Filter scraping targets based on the execution mode.
 # 000: Index daily price files only (07_)
 # 001: Daily market snapshot files and Shikiho monitoring files
-#      (01_ through 06_, 08_, and 09_)
+#      (01_ through 06_, 08_, 09_, and 10_)
 if ($Mode -eq '000') {
   $Items = @(
     $Items | Where-Object {
@@ -286,19 +303,20 @@ if ($Mode -eq '000') {
     $Items | Where-Object {
       $_.File -match '^0[1-6]_' -or
       $_.File -like '08_*' -or
-      $_.File -like '09_*'
+      $_.File -like '09_*' -or
+      $_.File -like '10_*'
     }
   )
 }
 
 # Filter scraping targets by file prefix.
 # Blank: all files allowed by Mode.
-# 01 through 09: files whose names begin with the specified prefix.
+# 01 through 10: files whose names begin with the specified prefix.
 if (-not [string]::IsNullOrWhiteSpace($TargetFile)) {
   $TargetFile = $TargetFile.Trim()
 
-  if ($TargetFile -notmatch '^0[1-9]$') {
-    throw "invalid TargetFile: $TargetFile. available values are 01 through 09"
+  if ($TargetFile -notmatch '^(0[1-9]|10)$') {
+    throw "invalid TargetFile: $TargetFile. available values are 01 through 10"
   }
 
   $Items = @(
@@ -1472,12 +1490,250 @@ function Add-UsMarketValuationExtractData {
     "lastDate=$($Value.lastDate)"
   )
 }
+function Add-LatestDownloadLinkData {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Ws,
 
+    [Parameter(Mandatory = $true)]
+    [string]$SectionTitle
+  )
+
+  Write-Host (
+    '[INFO] latest download link DOM processing start: ' +
+    $SectionTitle
+  )
+
+  $SectionTitleJson =
+    $SectionTitle |
+    ConvertTo-Json -Compress
+
+  $Expression = @"
+(function () {
+  var SECTION_TITLE = $SectionTitleJson;
+  var DATA_ELEMENT_ID = "daily_snapshot_download_data";
+
+  function normalizeText(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /*
+   * 指定された見出しを探す。
+   */
+  var headings =
+    Array.from(
+      document.querySelectorAll(
+        "h1, h2, h3, h4, h5, h6"
+      )
+    );
+
+  var heading = headings.find(function (element) {
+    return (
+      normalizeText(element.textContent) ===
+      SECTION_TITLE
+    );
+  });
+
+  if (!heading) {
+    throw new Error(
+      "section heading not found: " +
+      SECTION_TITLE
+    );
+  }
+
+  /*
+   * 見出しより後にある最初のtableを取得する。
+   */
+  var tables =
+    Array.from(
+      document.querySelectorAll("table")
+    );
+
+  var table = null;
+
+  for (var i = 0; i < tables.length; i++) {
+    var position =
+      heading.compareDocumentPosition(
+        tables[i]
+      );
+
+    if (
+      position &
+      Node.DOCUMENT_POSITION_FOLLOWING
+    ) {
+      table = tables[i];
+      break;
+    }
+  }
+
+  if (!table) {
+    throw new Error(
+      "table not found after section: " +
+      SECTION_TITLE
+    );
+  }
+
+  /*
+   * 対象table内で最初に現れるExcelリンクを取得する。
+   *
+   * JPXは先頭データ行にExcelリンクがあるが、
+   * 日銀は「掲載日」と「データ」が別trになっているため、
+   * 行位置には依存しない。
+   */
+  var links =
+    Array.from(
+      table.querySelectorAll("a[href]")
+    );
+
+  var excelLink =
+    links.find(function (link) {
+      var href =
+        String(
+          link.getAttribute("href") || ""
+        );
+
+      return /\.(xlsx|xls)(?:[?#].*)?$/i.test(
+        href
+      );
+    });
+
+  if (!excelLink) {
+    throw new Error(
+      "excel link not found in table: " +
+      SECTION_TITLE
+    );
+  }
+
+  var excelRow =
+    excelLink.closest("tr");
+
+  if (!excelRow) {
+    throw new Error(
+      "excel row not found: " +
+      SECTION_TITLE
+    );
+  }
+
+  var downloadUrl =
+    new URL(
+      excelLink.getAttribute("href"),
+      document.baseURI
+    ).href;
+
+  /*
+   * 後段のPowerShellから取得しやすいよう、
+   * JSONをDOMへ埋め込む。
+   */
+  var existing =
+    document.getElementById(
+      DATA_ELEMENT_ID
+    );
+
+  if (existing) {
+    existing.parentNode.removeChild(
+      existing
+    );
+  }
+
+  var script =
+    document.createElement("script");
+
+  script.id =
+    DATA_ELEMENT_ID;
+
+  script.type =
+    "application/json";
+
+  script.textContent =
+    JSON.stringify({
+      section_title:
+        SECTION_TITLE,
+
+      row_text:
+        normalizeText(
+          excelRow.textContent
+        ),
+
+      download_url:
+        downloadUrl
+    });
+
+  document.body.appendChild(script);
+
+  return {
+    sectionTitle:
+      SECTION_TITLE,
+
+    rowText:
+      normalizeText(
+        excelRow.textContent
+      ),
+
+    downloadUrl:
+      downloadUrl
+  };
+})()
+"@
+
+  $Res =
+    Invoke-Cdp `
+      $Ws `
+      7 `
+      'Runtime.evaluate' `
+      @{
+        expression = $Expression
+        returnByValue = $true
+      }
+
+  if ($Res.result.exceptionDetails -ne $null) {
+
+    $Description = ''
+
+    if (
+      $Res.result.exceptionDetails.exception -ne $null -and
+      $Res.result.exceptionDetails.exception.description -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.exception.description
+
+    } elseif (
+      $Res.result.exceptionDetails.text -ne $null
+    ) {
+      $Description =
+        [string]$Res.result.exceptionDetails.text
+    }
+
+    throw (
+      'latest download link DOM processing failed: ' +
+      $Description
+    )
+  }
+
+  $Value =
+    $Res.result.result.value
+
+  if ($Value -eq $null) {
+    throw (
+      'latest download link DOM processing ' +
+      'returned no result'
+    )
+  }
+
+  Write-Host (
+    '[INFO] latest download link ready: ' +
+    "section=$($Value.sectionTitle) " +
+    "row=$($Value.rowText) " +
+    "url=$($Value.downloadUrl)"
+  )
+}
 function Get-Html-From-Edge {
   param(
     $Port,
     $Url,
-    [string]$FileName
+    [string]$FileName,
+    [string]$DownloadSectionTitle = ''
   )
 
   $Target = Invoke-RestMethod -Method Put "http://127.0.0.1:$Port/json/new?about:blank"
@@ -1531,6 +1787,16 @@ function Get-Html-From-Edge {
       default {
         # No target-specific DOM processing.
       }
+    }
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $DownloadSectionTitle
+      )
+    ) {
+      Add-LatestDownloadLinkData `
+        -Ws $Ws `
+        -SectionTitle $DownloadSectionTitle
     }
 
     # CDP IDs 5 and 7 are reserved for target-specific preprocessing.
@@ -1888,7 +2154,129 @@ function Test-Html-ByCheck {
 
   return $true
 }
+function Get-LatestDownloadUrlFromHtml {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Html,
 
+    [Parameter(Mandatory = $true)]
+    [string]$PageUrl
+  )
+
+  $Pattern =
+    '(?is)' +
+    '<script[^>]*' +
+    'id=["'']daily_snapshot_download_data["'']' +
+    '[^>]*>' +
+    '(.*?)' +
+    '</script>'
+
+  $Match =
+    [regex]::Match(
+      $Html,
+      $Pattern
+    )
+
+  if (-not $Match.Success) {
+    throw (
+      "download data not found in DOM: " +
+      $PageUrl
+    )
+  }
+
+  $Json =
+    [System.Net.WebUtility]::HtmlDecode(
+      $Match.Groups[1].Value
+    )
+
+  try {
+    $Data =
+      $Json |
+      ConvertFrom-Json
+  } catch {
+    throw (
+      "download data JSON parse failed: " +
+      $PageUrl
+    )
+  }
+
+  $DownloadUrl =
+    [string]$Data.download_url
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $DownloadUrl
+    )
+  ) {
+    throw (
+      "download URL is empty: " +
+      $PageUrl
+    )
+  }
+
+  Write-Host (
+    "[INFO] download section=" +
+    $Data.section_title
+  )
+
+  Write-Host (
+    "[INFO] download row=" +
+    $Data.row_text
+  )
+
+  Write-Host (
+    "[INFO] download url=" +
+    $DownloadUrl
+  )
+
+  return $DownloadUrl
+}
+function Save-ExcelFile {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Url,
+
+    [Parameter(Mandatory = $true)]
+    [string]$SavePath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Referer
+  )
+
+  Write-Host "[INFO] excel download start"
+  Write-Host "[INFO] url=$Url"
+  Write-Host "[INFO] save=$SavePath"
+
+  $Headers = @{
+    'User-Agent' =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/151.0.0.0 Safari/537.36'
+
+    'Referer' = $Referer
+  }
+
+  Invoke-WebRequest `
+    -Uri $Url `
+    -Headers $Headers `
+    -OutFile $SavePath `
+    -UseBasicParsing
+
+  if (-not (Test-Path $SavePath)) {
+    throw "excel file was not saved: $SavePath"
+  }
+
+  $FileInfo = Get-Item $SavePath
+
+  if ($FileInfo.Length -le 0) {
+    throw "excel file is empty: $SavePath"
+  }
+
+  Write-Host (
+    "[OK] excel saved: $SavePath " +
+    "bytes=$($FileInfo.Length)"
+  )
+}
 function Invoke-ItemDownload {
   param(
     $Item,
@@ -1912,17 +2300,54 @@ function Invoke-ItemDownload {
   Write-Host $Url
   Write-Host "[INFO] check=$Check"
 
-  $Html = Get-Html-From-Edge `
+  $DownloadSectionTitle = ''
+
+  if (
+    $Item.ContainsKey(
+      'DownloadSectionTitle'
+    )
+  ) {
+    $DownloadSectionTitle =
+      [string]$Item.DownloadSectionTitle
+  }
+
+    $Html = Get-Html-From-Edge `
     -Port $Port `
     -Url $Url `
-    -FileName $FileName
+    -FileName $FileName `
+    -DownloadSectionTitle $DownloadSectionTitle
 
   Test-Html-ByCheck $Html $Check | Out-Null
 
-  [System.IO.File]::WriteAllText($SavePath, $Html, $Utf8NoBom)
+  $DownloadType = ''
 
-  Write-Host "[OK] saved: $SavePath"
-  
+  if ($Item.ContainsKey('DownloadType')) {
+    $DownloadType = [string]$Item.DownloadType
+  }
+
+  if ($DownloadType -eq 'LatestExcel') {
+
+    $ExcelUrl =
+      Get-LatestDownloadUrlFromHtml `
+        -Html $Html `
+        -PageUrl $Url
+
+    Save-ExcelFile `
+      -Url $ExcelUrl `
+      -SavePath $SavePath `
+      -Referer $Url
+
+  } else {
+
+    [System.IO.File]::WriteAllText(
+      $SavePath,
+      $Html,
+      $Utf8NoBom
+    )
+
+    Write-Host "[OK] saved: $SavePath"
+  }
+
   return $Html
 }
 
