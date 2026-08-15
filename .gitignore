@@ -24,3 +24,7 @@ ppk/
 
 # ローカル設定
 batch/j_quants/conf/config.php
+
+# データファイル
+data/kabutan/daily_market_snapshot/*/10_download_*.xls
+data/kabutan/daily_market_snapshot/*/10_download_*.xlsx
