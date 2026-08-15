@@ -840,6 +840,224 @@ const fs = require('fs');
   
   // --- ここまで改修ポイント ---
 
+  // JPX home market summary
+  const isJpxHome =
+    /^https:\/\/www\.jpx\.co\.jp\/(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isJpxHome) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const wrappers =
+            Array.from(
+              document.querySelectorAll(
+                '.JPX-ms-wrapper'
+              )
+            );
+
+          const targetWrapper =
+            wrappers.find(wrapper => {
+              const title =
+                wrapper.querySelector(
+                  '.JPX-ms-title'
+                );
+
+              if (!title) {
+                return false;
+              }
+
+              return (
+                (title.textContent || '').trim() ===
+                '株式市場　売買高・売買代金'
+              );
+            });
+
+          if (!targetWrapper) {
+            return false;
+          }
+
+          const box =
+            targetWrapper.querySelector(
+              '.JPX-ms-box.-is-price'
+            );
+
+          if (!box) {
+            return false;
+          }
+
+          const rows =
+            Array.from(
+              box.querySelectorAll(
+                '.JPX-ms-data'
+              )
+            );
+
+          if (rows.length !== 3) {
+            return false;
+          }
+
+          const expectedMarkets = [
+            'プライム',
+            'スタンダード',
+            'グロース',
+          ];
+
+          return rows.every(
+            (row, index) => {
+              const market =
+                row.querySelector(
+                  '.JPX-ms-name'
+                );
+
+              const volume =
+                row.querySelector(
+                  '.JPX-ms-amount'
+                );
+
+              const value =
+                row.querySelector(
+                  '.JPX-ms-price'
+                );
+
+              if (
+                !market ||
+                !volume ||
+                !value
+              ) {
+                return false;
+              }
+
+              const marketText =
+                (market.textContent || '')
+                  .trim();
+
+              const volumeText =
+                (volume.textContent || '')
+                  .trim();
+
+              const valueText =
+                (value.textContent || '')
+                  .trim();
+
+              return (
+                marketText ===
+                  expectedMarkets[index] &&
+                volumeText !== '' &&
+                valueText !== ''
+              );
+            }
+          );
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] JPX home market summary DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        'JPX home market summary DOM processing failed: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
+  // nikkei225jp.com margin balance / profit-loss ratio
+  const isMarginBalanceProfitLoss =
+    /^https:\/\/nikkei225jp\.com\/data\/sinyou\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isMarginBalanceProfitLoss) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const table =
+            document.querySelector('#datatbl');
+
+          if (!table) {
+            return false;
+          }
+
+          const rows =
+            Array.from(
+              table.querySelectorAll('tr')
+            ).filter(row => {
+              return row.querySelectorAll('td').length === 9;
+            });
+
+          /*
+           * レポートでは最新5行を使用するため、
+           * 少なくとも5行存在することを確認する。
+           */
+          if (rows.length < 5) {
+            return false;
+          }
+
+          /*
+           * 最新5行について、
+           * 9列すべて存在し、
+           * 日付および主要数値列が空ではないことを確認する。
+           */
+          return rows
+            .slice(0, 5)
+            .every(row => {
+              const cells =
+                row.querySelectorAll('td');
+
+              if (cells.length !== 9) {
+                return false;
+              }
+
+              const date =
+                cells[0].querySelector('time');
+
+              if (
+                !date ||
+                (date.textContent || '').trim() === ''
+              ) {
+                return false;
+              }
+
+              /*
+               * 信用評価率だけは最新行で "-"
+               * となる場合があるため、
+               * 空文字でなければ許可する。
+               */
+              return (
+                (cells[1].textContent || '').trim() !== '' &&
+                (cells[2].textContent || '').trim() !== '' &&
+                (cells[3].textContent || '').trim() !== '' &&
+                (cells[4].textContent || '').trim() !== '' &&
+                (cells[5].textContent || '').trim() !== '' &&
+                (cells[6].textContent || '').trim() !== '' &&
+                (cells[7].textContent || '').trim() !== '' &&
+                (cells[8].textContent || '').trim() !== ''
+              );
+            });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] margin balance profit-loss DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        '信用残・評価損益の動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
   const html = await page.content();
   const finalUrl = page.url();
   const title = await page.title();

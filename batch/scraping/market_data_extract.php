@@ -15,6 +15,8 @@
  *   government_bond_yield：国債利回り
  *   us_market_valuation：米国株バリュエーション
  *   economic_schedule：経済スケジュール
+ *   jpx_home：JPXホーム
+ *   margin_balance_profit_loss：信用残・評価損益
  *
  * 実行例:
  *   php market_data_extract.php
@@ -39,6 +41,8 @@ require __DIR__ . '/mde_volatility_index.php';
 require __DIR__ . '/mde_government_bond_yield.php';
 require __DIR__ . '/mde_us_market_valuation.php';
 require __DIR__ . '/mde_economic_schedule.php';
+require __DIR__ . '/mde_jpx_home.php';
+require __DIR__ . '/mde_margin_balance_profit_loss.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -121,14 +125,14 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://www.jpx.co.jp/',
     'file' => '09_extract_10_jpx_home.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'margin_balance_profit_loss' => array(
     'name' => '信用残・評価損益',
     'url' => 'https://nikkei225jp.com/data/sinyou.php',
     'file' => '09_extract_11_margin_balance_profit_loss.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'new_high_low' => array(
     'name' => '新高値・新安値',
@@ -466,6 +470,31 @@ try {
             build_economic_schedule_message_(
               $parsed,
               $isIndividual
+            );
+          break;
+
+        case 'jpx_home':
+          $parsed =
+            parse_jpx_home_html_(
+              $html
+            );
+
+          $reportSection =
+            build_jpx_home_message_(
+              $parsed,
+              $isIndividual
+            );
+          break;
+          
+        case 'margin_balance_profit_loss':
+          $parsed =
+            parse_margin_balance_profit_loss_html_(
+              $html
+            );
+
+          $reportSection =
+            build_margin_balance_profit_loss_message_(
+              $parsed
             );
           break;
 
