@@ -17,6 +17,11 @@
  *   economic_schedule：経済スケジュール
  *   jpx_home：JPXホーム
  *   margin_balance_profit_loss：信用残・評価損益
+ *   new_high_low：新高値・新安値
+ *   investor_type_trading：投資部門別売買状況
+ *   kabutan_theme_access_ranking：株探テーマアクセスランキング
+ *   global_market_realtime：世界の株価リアルタイム
+ *   global_buffett_indicator：世界バフェット指数
  *
  * 実行例:
  *   php market_data_extract.php
@@ -43,6 +48,11 @@ require __DIR__ . '/mde_us_market_valuation.php';
 require __DIR__ . '/mde_economic_schedule.php';
 require __DIR__ . '/mde_jpx_home.php';
 require __DIR__ . '/mde_margin_balance_profit_loss.php';
+require __DIR__ . '/mde_new_high_low.php';
+require __DIR__ . '/mde_investor_type_trading.php';
+require __DIR__ . '/mde_kabutan_theme_access_ranking.php';
+require __DIR__ . '/mde_global_market_realtime.php';
+require __DIR__ . '/mde_global_buffett_indicator.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -139,21 +149,21 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/data/new.php',
     'file' => '09_extract_12_new_high_low.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'investor_type_trading' => array(
     'name' => '投資部門別売買状況',
     'url' => 'https://nikkei225jp.com/data/shutai.php',
     'file' => '09_extract_13_investor_type_trading.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'kabutan_theme_access_ranking' => array(
     'name' => '株探テーマアクセスランキング',
     'url' => 'https://kabutan.jp/info/accessranking/3_2',
     'file' => '09_extract_14_kabutan_theme_access_ranking.html',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'jpx_arbitrage_daily' => array(
     'name' => 'JPX裁定取引の状況（日別）',
@@ -188,14 +198,14 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://nikkei225jp.com/',
     'file' => '09_extract_19_global_market_realtime.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'global_buffett_indicator' => array(
     'name' => '世界バフェット指数',
     'url' => 'https://nikkei225jp.com/data/buffett.php',
     'file' => '09_extract_15_global_buffett_indicator.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'fed_total_assets' => array(
     'name' => 'FRB総資産',
@@ -494,6 +504,66 @@ try {
 
           $reportSection =
             build_margin_balance_profit_loss_message_(
+              $parsed
+            );
+          break;
+
+        case 'new_high_low':
+          $parsed =
+            parse_new_high_low_html_(
+              $html
+            );
+
+          $reportSection =
+            build_new_high_low_message_(
+              $parsed
+            );
+          break;
+
+        case 'investor_type_trading':
+          $parsed =
+            parse_investor_type_trading_html_(
+              $html
+            );
+
+          $reportSection =
+            build_investor_type_trading_message_(
+              $parsed
+            );
+          break;
+
+        case 'kabutan_theme_access_ranking':
+          $parsed =
+            parse_kabutan_theme_access_ranking_html_(
+              $html
+            );
+
+          $reportSection =
+            build_kabutan_theme_access_ranking_message_(
+              $parsed
+            );
+          break;
+
+        case 'global_market_realtime':
+          $parsed =
+            parse_global_market_realtime_html_(
+              $html
+            );
+
+          $reportSection =
+            build_global_market_realtime_message_(
+              $parsed
+            );
+          break;
+
+        case 'global_buffett_indicator':
+          $parsed =
+            parse_global_buffett_indicator_html_(
+              $html
+            );
+
+          $reportSection =
+            build_global_buffett_indicator_message_(
               $parsed
             );
           break;

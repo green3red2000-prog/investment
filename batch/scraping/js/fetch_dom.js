@@ -1058,6 +1058,596 @@ const fs = require('fs');
     }
   }
 
+  // nikkei225jp.com new high / new low
+  const isNewHighLow =
+    /^https:\/\/nikkei225jp\.com\/data\/new\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isNewHighLow) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const table =
+            document.querySelector('#datatbl');
+
+          if (!table) {
+            return false;
+          }
+
+          /*
+           * 対象テーブルであることを確認する。
+           */
+          const caption =
+            table.querySelector('caption');
+
+          if (
+            !caption ||
+            !(caption.textContent || '')
+              .includes('新高値 新安値 30営業日')
+          ) {
+            return false;
+          }
+
+          /*
+           * tdを9列持つ行だけをデータ行として扱う。
+           */
+          const rows =
+            Array.from(
+              table.querySelectorAll('tr')
+            ).filter(row => {
+              return row.querySelectorAll('td').length === 9;
+            });
+
+          /*
+           * レポートでは最新5行を使用するため、
+           * 最低5件そろうまで待機する。
+           */
+          if (rows.length < 5) {
+            return false;
+          }
+
+          /*
+           * 最新5行について、
+           * 今回使用する列がすべて入っていることを確認する。
+           *
+           * [0] 日付
+           * [4] 新高値銘柄数
+           * [5] 新安値銘柄数
+           * [6] 値上がり銘柄数
+           * [7] 値下がり銘柄数
+           */
+          return rows
+            .slice(0, 5)
+            .every(row => {
+              const cells =
+                row.querySelectorAll('td');
+
+              if (cells.length !== 9) {
+                return false;
+              }
+
+              const date =
+                cells[0].querySelector('time');
+
+              if (
+                !date ||
+                (date.textContent || '').trim() === ''
+              ) {
+                return false;
+              }
+
+              return (
+                (cells[4].textContent || '').trim() !== '' &&
+                (cells[5].textContent || '').trim() !== '' &&
+                (cells[6].textContent || '').trim() !== '' &&
+                (cells[7].textContent || '').trim() !== ''
+              );
+            });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] new high-low DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        '新高値・新安値の動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
+  // nikkei225jp.com investor type trading
+  const isInvestorTypeTrading =
+    /^https:\/\/nikkei225jp\.com\/data\/shutai\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isInvestorTypeTrading) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const table =
+            document.querySelector('#datatbl');
+
+          if (!table) {
+            return false;
+          }
+
+          /*
+           * 対象テーブルであることを確認する。
+           */
+          const caption =
+            table.querySelector('caption');
+
+          if (
+            !caption ||
+            !(caption.textContent || '')
+              .includes('投資主体別 売買状況')
+          ) {
+            return false;
+          }
+
+          /*
+           * 週次データだけを取得する。
+           *
+           * 月計・年計も14列だが、
+           * 週次行だけは1列目にtime要素を持つ。
+           */
+          const rows =
+            Array.from(
+              table.querySelectorAll('tr')
+            ).filter(row => {
+              const cells =
+                row.querySelectorAll('td');
+
+              return (
+                cells.length === 14 &&
+                cells[0].querySelector('time') !== null
+              );
+            });
+
+          /*
+           * レポートでは最新5行を使用するため、
+           * 最低5件そろうまで待機する。
+           */
+          if (rows.length < 5) {
+            return false;
+          }
+
+          /*
+           * 最新5行について、
+           * 14列すべてが生成済みであることを確認する。
+           *
+           * 各値は未公表時に"-"となる場合があるため、
+           * 数値かどうかはここでは判定せず、
+           * 空文字でないことだけを確認する。
+           */
+          return rows
+            .slice(0, 5)
+            .every(row => {
+              const cells =
+                row.querySelectorAll('td');
+
+              if (cells.length !== 14) {
+                return false;
+              }
+
+              const date =
+                cells[0].querySelector('time');
+
+              if (
+                !date ||
+                (date.textContent || '').trim() === ''
+              ) {
+                return false;
+              }
+
+              for (let i = 1; i < 14; i++) {
+                if (
+                  (cells[i].textContent || '').trim() === ''
+                ) {
+                  return false;
+                }
+              }
+
+              return true;
+            });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] investor type trading DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        '投資部門別売買状況の動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
+  // nikkei225jp.com global market realtime
+  const isGlobalMarketRealtime =
+    /^https:\/\/nikkei225jp\.com\/?(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isGlobalMarketRealtime) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const box =
+            document.querySelector('#Box');
+
+          if (!box) {
+            return false;
+          }
+
+          const rows =
+            Array.from(
+              box.querySelectorAll('.D1')
+            );
+
+          if (rows.length === 0) {
+            return false;
+          }
+
+          /*
+           * 「オルカンeMAXIS Slim」も含め、
+           * 表全体が生成済みであることを確認する。
+           *
+           * 解析時にオルカンのみ除外するため、
+           * DOM取得段階では存在していてよい。
+           */
+          const hasOrukan =
+            rows.some(row => {
+              const name =
+                row.querySelector(
+                  '[id^="N"]'
+                );
+
+              if (!name) {
+                return false;
+              }
+
+              const text =
+                (name.textContent || '')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+
+              return (
+                text.includes('オルカン') &&
+                text.includes('eMAXIS Slim')
+              );
+            });
+
+          if (!hasOrukan) {
+            return false;
+          }
+
+          /*
+           * 全D1行について、
+           * 名称・日時・値と、
+           * 通常値または比較値一式が完成していることを確認する。
+           */
+          return rows.every(row => {
+            const name =
+              row.querySelector(
+                '[id^="N"]'
+              );
+
+            if (!name) {
+              return false;
+            }
+
+            const id =
+              name.getAttribute('id') || '';
+
+            const match =
+              id.match(/^N(\d+)$/);
+
+            if (!match) {
+              return false;
+            }
+
+            const code = match[1];
+
+            const time =
+              row.querySelector(
+                `#T${code}`
+              );
+
+            const value =
+              row.querySelector(
+                `#V${code}`
+              );
+
+            if (
+              !time ||
+              !value
+            ) {
+              return false;
+            }
+
+            if (
+              (name.textContent || '').trim() === '' ||
+              (time.textContent || '').trim() === '' ||
+              (value.textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            /*
+             * 比較行かどうかを確認する。
+             */
+            const compareTitle =
+              row.querySelector(
+                `#sakiT${code}`
+              );
+
+            if (
+              compareTitle &&
+              (compareTitle.textContent || '').trim() !== ''
+            ) {
+              const compareValue =
+                row.querySelector(
+                  `#sakiSA${code}`
+                );
+
+              const compareRate =
+                row.querySelector(
+                  `#sakiPA${code}`
+                );
+
+              if (
+                !compareValue ||
+                !compareRate
+              ) {
+                return false;
+              }
+
+              if (
+                (compareValue.textContent || '').trim() === '' ||
+                (compareRate.textContent || '').trim() === ''
+              ) {
+                return false;
+              }
+
+              return true;
+            }
+
+            /*
+             * 通常行。
+             */
+            const change =
+              row.querySelector(
+                `#Z${code}`
+              );
+
+            const rate =
+              row.querySelector(
+                `#P${code}`
+              );
+
+            if (
+              !change ||
+              !rate
+            ) {
+              return false;
+            }
+
+            if (
+              (change.textContent || '').trim() === '' ||
+              (rate.textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            return true;
+          });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] global market realtime DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        '世界の株価リアルタイムの動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
+  // nikkei225jp.com global Buffett indicator
+  const isGlobalBuffettIndicator =
+    /^https:\/\/nikkei225jp\.com\/data\/buffett\.php(?:[?#].*)?$/i.test(
+      url
+    );
+
+  if (isGlobalBuffettIndicator) {
+    try {
+      await page.waitForFunction(
+        () => {
+          // ---------------------------------------------
+          // Summary
+          // ---------------------------------------------
+
+          const summaryTable =
+            document.querySelector('#datatblSummary');
+
+          if (!summaryTable) {
+            return false;
+          }
+
+          const worldMarketCap =
+            document.querySelector('#bfSumMc');
+
+          const worldMarketCapYen =
+            document.querySelector('#bfSumMcYen');
+
+          const worldGdp =
+            document.querySelector('#bfSumGdp');
+
+          const worldGdpSub =
+            document.querySelector('#bfSumGdpSub');
+
+          const worldBuffett =
+            document.querySelector('#bfSumBf');
+
+          const worldBuffettBand =
+            document.querySelector('#bfSumBand');
+
+          if (
+            !worldMarketCap ||
+            !worldMarketCapYen ||
+            !worldGdp ||
+            !worldGdpSub ||
+            !worldBuffett ||
+            !worldBuffettBand
+          ) {
+            return false;
+          }
+
+          const summaryValues = [
+            worldMarketCap,
+            worldMarketCapYen,
+            worldGdp,
+            worldGdpSub,
+            worldBuffett,
+            worldBuffettBand,
+          ];
+
+          if (
+            !summaryValues.every(
+              node =>
+                (node.textContent || '').trim() !== ''
+            )
+          ) {
+            return false;
+          }
+
+          // ---------------------------------------------
+          // Country table
+          // ---------------------------------------------
+
+          const countryTable =
+            document.querySelector('#datatbl');
+
+          if (!countryTable) {
+            return false;
+          }
+
+          const rows =
+            Array.from(
+              countryTable.querySelectorAll(
+                'tbody > tr'
+              )
+            );
+
+          /*
+           * 現行仕様では主要24か国。
+           */
+          if (rows.length !== 24) {
+            return false;
+          }
+
+          return rows.every(row => {
+            const cells =
+              row.querySelectorAll(':scope > td');
+
+            if (cells.length !== 6) {
+              return false;
+            }
+
+            /*
+             * 国・地域
+             */
+            const country =
+              cells[0].querySelector('.jp');
+
+            if (
+              !country ||
+              (country.textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            /*
+             * 時価総額 + 日付
+             */
+            const marketCapDate =
+              cells[1].querySelector('.bfYr');
+
+            if (
+              !marketCapDate ||
+              (cells[1].textContent || '').trim() === '' ||
+              (marketCapDate.textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            /*
+             * GDP + 参考値
+             */
+            const gdpReference =
+              cells[2].querySelector('.bfYr');
+
+            if (
+              !gdpReference ||
+              (cells[2].textContent || '').trim() === '' ||
+              (gdpReference.textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            /*
+             * バフェット指数
+             * 評価
+             * 実績差
+             */
+            if (
+              (cells[3].textContent || '').trim() === '' ||
+              (cells[4].textContent || '').trim() === '' ||
+              (cells[5].textContent || '').trim() === ''
+            ) {
+              return false;
+            }
+
+            return true;
+          });
+        },
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] global Buffett indicator DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        '世界バフェット指数の動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+
   const html = await page.content();
   const finalUrl = page.url();
   const title = await page.title();
