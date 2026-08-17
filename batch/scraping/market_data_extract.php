@@ -2,8 +2,8 @@
 /**
  * 市況関連データ抽出（PHP）
  *
- * 保存済みHTML、またはWebから取得したHTMLを読み込み、
- * 処理対象ページごとの専用処理で市況関連データを抽出してTXTへ出力する。
+ * 保存済みHTML／Excel、またはWebから取得したHTML／Excelを読み込み、
+ * 処理対象ごとの専用処理で市況関連データを抽出してTXTへ出力する。
  *
  * 現在の実装対象:
  *   tosho_sector_index：東証業種別指数
@@ -22,6 +22,11 @@
  *   kabutan_theme_access_ranking：株探テーマアクセスランキング
  *   global_market_realtime：世界の株価リアルタイム
  *   global_buffett_indicator：世界バフェット指数
+ *   fed_total_assets：FRB総資産
+ *   us_high_yield_spread：米国ハイイールドスプレッド
+ *   gdpnow：GDPNow
+ *   jpx_arbitrage_daily：JPX裁定取引の状況（日別）
+ *   jpx_program_trading_weekly：JPXプログラム売買の状況（週間）
  *
  * 実行例:
  *   php market_data_extract.php
@@ -53,6 +58,11 @@ require __DIR__ . '/mde_investor_type_trading.php';
 require __DIR__ . '/mde_kabutan_theme_access_ranking.php';
 require __DIR__ . '/mde_global_market_realtime.php';
 require __DIR__ . '/mde_global_buffett_indicator.php';
+require __DIR__ . '/mde_fed_total_assets.php';
+require __DIR__ . '/mde_us_high_yield_spread.php';
+require __DIR__ . '/mde_gdpnow.php';
+require __DIR__ . '/mde_jpx_arbitrage_daily.php';
+require __DIR__ . '/mde_jpx_program_trading_weekly.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -170,14 +180,34 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://www.jpx.co.jp/markets/statistics-equities/program/index.html',
     'file' => '10_download_01_jpx_arbitrage_daily.xls',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
+    /*
+     * HTMLではなくExcelバイナリを処理する。
+     */
+    'content_type' => 'xls',
+    /*
+     * --source=web時は対象ページから
+     * 指定セクション内の最新Excelを取得する。
+     */
+    'download_type' => 'latest_excel',
+    'download_section_title' => '裁定取引の状況（日別）',
   ),
   'jpx_program_trading_weekly' => array(
     'name' => 'JPXプログラム売買の状況（週間）',
     'url' => 'https://www.jpx.co.jp/markets/statistics-equities/program/01.html',
     'file' => '10_download_02_jpx_program_trading_weekly.xls',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
+    /*
+     * HTMLではなくExcelバイナリを処理する。
+     */
+    'content_type' => 'xls',
+    /*
+     * --source=web時は対象ページから
+     * 指定セクション内の最新Excelを取得する。
+     */
+    'download_type' => 'latest_excel',
+    'download_section_title' => 'プログラム売買の状況（週間）',
   ),
   'boj_current_account_final' => array(
     'name' => '日銀当座預金増減要因（確報）',
@@ -212,21 +242,21 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://fred.stlouisfed.org/series/WALCL',
     'file' => '09_extract_16_fed_total_assets.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'us_high_yield_spread' => array(
     'name' => '米国ハイイールドスプレッド',
     'url' => 'https://fred.stlouisfed.org/series/BAMLH0A0HYM2',
     'file' => '09_extract_17_us_high_yield_spread.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
   'gdpnow' => array(
     'name' => 'GDPNow',
     'url' => 'https://www.atlantafed.org/research-and-data/data/gdpnow',
     'file' => '09_extract_18_gdpnow.html',
     'groups' => array('GROUP1'),
-    'implemented' => false,
+    'implemented' => true,
   ),
 );
 
@@ -340,15 +370,15 @@ foreach ($args as $arg) {
 
 $targetYmd8 = str_replace('-', '', $targetYmd);
 $targetYmdSlash = str_replace('-', '/', $targetYmd);
-$htmlDir = rtrim($DATA_BASE_DIR, '/') . '/' . $targetYmd8;
+$dataDir = rtrim($DATA_BASE_DIR, '/') . '/' . $targetYmd8;
 
 // ===== メイン処理 =====
 try {
   ensure_dir($TMP_DIR);
 
-  if ($source === 'file' && !is_dir($htmlDir)) {
+  if ($source === 'file' && !is_dir($dataDir)) {
     throw new RuntimeException(
-      "対象HTMLフォルダが存在しません: {$htmlDir}"
+      "対象データフォルダが存在しません: {$dataDir}"
     );
   }
 
@@ -414,57 +444,57 @@ try {
       " source={$source}" .
       "\n";
 
-    $loaded = load_target_html_(
+    $loaded = load_target_data_(
       $targetId,
       $definition,
       $source,
-      $htmlDir
+      $dataDir
     );
 
-    $html = (string)$loaded['html'];
+    $data = (string)$loaded['data'];
     $proxy = (string)$loaded['proxy'];
 
     try {
       switch ($targetId) {
         case 'tosho_sector_index':
-          $parsed = parse_tosho_sector_index_html_($html);
+          $parsed = parse_tosho_sector_index_html_($data);
           $reportSection =
             build_tosho_sector_index_message_($parsed);
           break;
 
         case 'nikkei225_valuation':
-          $parsed = parse_nikkei225_valuation_html_($html);
+          $parsed = parse_nikkei225_valuation_html_($data);
           $reportSection =
             build_nikkei225_valuation_message_($parsed);
           break;
           
         case 'advance_decline_ratio':
-          $parsed = parse_advance_decline_ratio_html_($html);
+          $parsed = parse_advance_decline_ratio_html_($data);
           $reportSection = build_advance_decline_ratio_message_($parsed);
           break;
         
         case 'short_selling_ratio':
-          $parsed = parse_short_selling_ratio_html_($html);
+          $parsed = parse_short_selling_ratio_html_($data);
           $reportSection = build_short_selling_ratio_message_($parsed);
           break;
           
         case 'nikkei225_contribution':
-          $parsed = parse_nikkei225_contribution_html_($html);
+          $parsed = parse_nikkei225_contribution_html_($data);
           $reportSection = build_nikkei225_contribution_message_($parsed);
           break;
 
         case 'volatility_index':
-          $parsed = parse_volatility_index_html_($html);
+          $parsed = parse_volatility_index_html_($data);
           $reportSection = build_volatility_index_message_($parsed);
           break;
 
         case 'government_bond_yield':
-          $parsed = parse_government_bond_yield_html_($html);
+          $parsed = parse_government_bond_yield_html_($data);
           $reportSection = build_government_bond_yield_message_($parsed);
           break;
 
         case 'us_market_valuation':
-          $parsed = parse_us_market_valuation_html_($html);
+          $parsed = parse_us_market_valuation_html_($data);
           $reportSection =
             build_us_market_valuation_message_($parsed);
           break;
@@ -472,7 +502,7 @@ try {
         case 'economic_schedule':
           $parsed =
             parse_economic_schedule_html_(
-              $html,
+              $data,
               $targetYmd
             );
 
@@ -486,7 +516,7 @@ try {
         case 'jpx_home':
           $parsed =
             parse_jpx_home_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -499,7 +529,7 @@ try {
         case 'margin_balance_profit_loss':
           $parsed =
             parse_margin_balance_profit_loss_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -511,7 +541,7 @@ try {
         case 'new_high_low':
           $parsed =
             parse_new_high_low_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -523,7 +553,7 @@ try {
         case 'investor_type_trading':
           $parsed =
             parse_investor_type_trading_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -535,7 +565,7 @@ try {
         case 'kabutan_theme_access_ranking':
           $parsed =
             parse_kabutan_theme_access_ranking_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -547,7 +577,7 @@ try {
         case 'global_market_realtime':
           $parsed =
             parse_global_market_realtime_html_(
-              $html
+              $data
             );
 
           $reportSection =
@@ -559,11 +589,71 @@ try {
         case 'global_buffett_indicator':
           $parsed =
             parse_global_buffett_indicator_html_(
-              $html
+              $data
             );
 
           $reportSection =
             build_global_buffett_indicator_message_(
+              $parsed
+            );
+          break;
+
+        case 'fed_total_assets':
+          $parsed =
+            parse_fed_total_assets_html_(
+              $data
+            );
+
+          $reportSection =
+            build_fed_total_assets_message_(
+              $parsed
+            );
+          break;
+
+        case 'us_high_yield_spread':
+          $parsed =
+            parse_us_high_yield_spread_html_(
+              $data
+            );
+
+          $reportSection =
+            build_us_high_yield_spread_message_(
+              $parsed
+            );
+          break;
+
+        case 'gdpnow':
+          $parsed =
+            parse_gdpnow_html_(
+              $data
+            );
+
+          $reportSection =
+            build_gdpnow_message_(
+              $parsed
+            );
+          break;
+          
+        case 'jpx_arbitrage_daily':
+          $parsed =
+            parse_jpx_arbitrage_daily_xls_(
+              $data
+            );
+
+          $reportSection =
+            build_jpx_arbitrage_daily_message_(
+              $parsed
+            );
+          break;
+
+        case 'jpx_program_trading_weekly':
+          $parsed =
+            parse_jpx_program_trading_weekly_xls_(
+              $data
+            );
+
+          $reportSection =
+            build_jpx_program_trading_weekly_message_(
               $parsed
             );
           break;
@@ -601,9 +691,19 @@ try {
     $reportSections[] = $reportSection;
     $successCount++;
 
+    $contentType =
+      isset($definition['content_type'])
+        ? (string)$definition['content_type']
+        : 'html';
+
+    $bytesLabel =
+      ($contentType === 'xls' || $contentType === 'xlsx')
+        ? 'excel_bytes'
+        : 'html_bytes';
+
     echo
       "[OK] target={$targetId}" .
-      " html_bytes=" . strlen($html) .
+      " {$bytesLabel}=" . strlen($data) .
       "\n";
   }
 
@@ -621,7 +721,7 @@ try {
   $messageLines[] = "ソース: {$source}";
 
   if ($source === 'file') {
-    $messageLines[] = "読込フォルダ: {$htmlDir}";
+    $messageLines[] = "読込フォルダ: {$dataDir}";
   }
 
   $messageLines[] =
@@ -800,43 +900,190 @@ function select_targets_($definitions, $target) {
 }
 
 // =======================================================
-// HTML取得
+// データ取得
 // =======================================================
 
-function load_target_html_($targetId, $definition, $source, $htmlDir) {
+function load_target_data_(
+  $targetId,
+  $definition,
+  $source,
+  $dataDir
+) {
+  $contentType =
+    isset($definition['content_type'])
+      ? (string)$definition['content_type']
+      : 'html';
+
+  // -------------------------------------------------------
+  // 保存済みファイル
+  // -------------------------------------------------------
+
   if ($source === 'file') {
-    $htmlPath =
-      rtrim($htmlDir, '/') . '/' . $definition['file'];
+    $dataPath =
+      rtrim($dataDir, '/') .
+      '/' .
+      $definition['file'];
 
-    if (!is_file($htmlPath)) {
+    if (!is_file($dataPath)) {
       throw new RuntimeException(
-        "対象HTMLファイルが存在しません: {$htmlPath}"
+        "対象データファイルが存在しません: {$dataPath}"
       );
     }
 
-    $html = file_get_contents($htmlPath);
+    $data =
+      file_get_contents(
+        $dataPath
+      );
 
-    if ($html === false) {
+    if ($data === false) {
       throw new RuntimeException(
-        "HTMLファイルの読み込みに失敗しました: {$htmlPath}"
+        "データファイルの読み込みに失敗しました: {$dataPath}"
       );
     }
 
-    if ($html === '') {
+    if ($data === '') {
       throw new RuntimeException(
-        "HTMLファイルが空です: {$htmlPath}"
+        "データファイルが空です: {$dataPath}"
       );
     }
 
-    echo "[FILE] {$targetId} {$htmlPath}\n";
+    echo
+      "[FILE] {$targetId} {$dataPath}\n";
 
-    return [
-      'html' => $html,
+    return array(
+      'data' => $data,
       'proxy' => '',
-    ];
+    );
   }
 
-  if (!function_exists('http_get_text_browser_with_meta')) {
+  // -------------------------------------------------------
+  // Web：Excelダウンロード
+  // -------------------------------------------------------
+
+  $downloadType =
+    isset($definition['download_type'])
+      ? (string)$definition['download_type']
+      : '';
+
+  if (
+    ($contentType === 'xls' ||
+     $contentType === 'xlsx') &&
+    $downloadType === 'latest_excel'
+  ) {
+    if (
+      !function_exists(
+        'http_get_latest_excel_with_meta'
+      )
+    ) {
+      throw new RuntimeException(
+        "http_get_latest_excel_with_meta()が見つかりません。"
+      );
+    }
+
+    $sectionTitle =
+      isset($definition['download_section_title'])
+        ? trim(
+            (string)$definition[
+              'download_section_title'
+            ]
+          )
+        : '';
+
+    if ($sectionTitle === '') {
+      throw new RuntimeException(
+        "Excel取得セクション名が設定されていません: " .
+        $targetId
+      );
+    }
+
+    http_session_begin(true);
+
+    $response =
+      http_get_latest_excel_with_meta(
+        (string)$definition['url'],
+        $sectionTitle,
+        array(
+          'timeout' => 120,
+          'retry_max' => 3,
+          'retry_sleep_ms' => 3000,
+          'defer_proxy_success' => true,
+        )
+      );
+
+    $proxy =
+      isset($response['proxy'])
+        ? (string)$response['proxy']
+        : '';
+
+    $data =
+      isset($response['data'])
+        ? (string)$response['data']
+        : '';
+
+    $httpCode =
+      isset($response['http_code'])
+        ? (int)$response['http_code']
+        : 0;
+
+    $downloadUrl =
+      isset($response['download_url'])
+        ? (string)$response['download_url']
+        : '';
+
+    $rowText =
+      isset($response['row_text'])
+        ? (string)$response['row_text']
+        : '';
+
+    echo
+      "[WEB] {$targetId}" .
+      " http={$httpCode}" .
+      " section={$sectionTitle}" .
+      " url={$definition['url']}" .
+      "\n";
+
+    echo
+      "[DOWNLOAD] {$targetId}" .
+      " row={$rowText}" .
+      " url={$downloadUrl}" .
+      "\n";
+
+    if ($httpCode !== 200) {
+      if ($proxy !== '') {
+        remember_url_proxy_failure_(
+          (string)$definition['url'],
+          $proxy
+        );
+      }
+
+      throw new RuntimeException(
+        "ExcelダウンロードのHTTPレスポンスコードが200ではありません: " .
+        $httpCode
+      );
+    }
+
+    if ($data === '') {
+      throw new RuntimeException(
+        "Webから取得したExcelファイルが空です: " .
+        $downloadUrl
+      );
+    }
+
+    return array(
+      'data' => $data,
+      'proxy' => $proxy,
+    );
+  }
+
+  // -------------------------------------------------------
+  // Web：HTML
+  // -------------------------------------------------------
+
+  if (
+    !function_exists(
+      'http_get_text_browser_with_meta'
+    )
+  ) {
     throw new RuntimeException(
       "http_get_text_browser_with_meta()が見つかりません。"
     );
@@ -844,32 +1091,37 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
 
   http_session_begin(true);
 
-  $response = http_get_text_browser_with_meta(
-    $definition['url'],
-    array(
-      'timeout' => 120,
-      'retry_max' => 3,
-      'retry_sleep_ms' => 3000,
-      'allow_http_error' => true,
-      'defer_proxy_success' => true,
-    )
-  );
-  
-  $proxy = isset($response['proxy'])
-    ? (string)$response['proxy']
-    : '';
+  $response =
+    http_get_text_browser_with_meta(
+      $definition['url'],
+      array(
+        'timeout' => 120,
+        'retry_max' => 3,
+        'retry_sleep_ms' => 3000,
+        'allow_http_error' => true,
+        'defer_proxy_success' => true,
+      )
+    );
 
-  $html = isset($response['html'])
-    ? (string)$response['html']
-    : '';
+  $proxy =
+    isset($response['proxy'])
+      ? (string)$response['proxy']
+      : '';
 
-  $httpCode = isset($response['http_code'])
-    ? (int)$response['http_code']
-    : 0;
+  $data =
+    isset($response['html'])
+      ? (string)$response['html']
+      : '';
 
-  $title = isset($response['title'])
-    ? (string)$response['title']
-    : '';
+  $httpCode =
+    isset($response['http_code'])
+      ? (int)$response['http_code']
+      : 0;
+
+  $title =
+    isset($response['title'])
+      ? (string)$response['title']
+      : '';
 
   echo
     "[WEB] {$targetId}" .
@@ -879,29 +1131,29 @@ function load_target_html_($targetId, $definition, $source, $htmlDir) {
     "\n";
 
   if ($httpCode !== 200) {
-  	  
-  	if ($proxy !== '') {
+    if ($proxy !== '') {
       remember_url_proxy_failure_(
         (string)$definition['url'],
         $proxy
       );
     }
-  	  
+
     throw new RuntimeException(
       "HTTPレスポンスコードが200ではありません: {$httpCode}"
     );
   }
 
-  if ($html === '') {
+  if ($data === '') {
     throw new RuntimeException(
-      "Webから取得したHTMLが空です: {$definition['url']}"
+      "Webから取得したHTMLが空です: " .
+      $definition['url']
     );
   }
 
-  return [
-    'html' => $html,
+  return array(
+    'data' => $data,
     'proxy' => $proxy,
-  ];
+  );
 }
 
 // =======================================================

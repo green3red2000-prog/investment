@@ -785,6 +785,677 @@ function http_get_text_browser_with_meta(
 }
 
 /**
+ * ページをPlaywrightで取得し、
+ * 指定セクション内の最新Excelリンクを取得して、
+ * Excel本体をバイナリでダウンロードする。
+ *
+ * @return array{
+ *   data:string,
+ *   http_code:int,
+ *   proxy:string,
+ *   download_url:string,
+ *   row_text:string
+ * }
+ */
+function http_get_latest_excel_with_meta(
+  string $pageUrl,
+  string $sectionTitle,
+  array $opt = []
+): array {
+
+  $sectionTitle =
+    trim($sectionTitle);
+
+  if ($sectionTitle === '') {
+    throw new InvalidArgumentException(
+      'sectionTitle is empty.'
+    );
+  }
+
+  /*
+   * PowerShell版と同様、
+   * まずブラウザで対象ページのDOMを完成させる。
+   */
+  $pageResponse =
+    http_get_text_browser_with_meta(
+      $pageUrl,
+      array_merge(
+        $opt,
+        array(
+          'allow_http_error' => true,
+          'defer_proxy_success' => true,
+        )
+      )
+    );
+
+  $pageHttpCode =
+    (int)($pageResponse['http_code'] ?? 0);
+
+  $proxy =
+    (string)($pageResponse['proxy'] ?? '');
+
+  $html =
+    (string)($pageResponse['html'] ?? '');
+
+  if ($pageHttpCode !== 200) {
+    throw new RuntimeException(
+      "Excel一覧ページのHTTPレスポンスコードが200ではありません: " .
+      "{$pageHttpCode} {$pageUrl}"
+    );
+  }
+
+  if ($html === '') {
+    throw new RuntimeException(
+      "Excel一覧ページのHTMLが空です: {$pageUrl}"
+    );
+  }
+
+  /*
+   * PowerShell版
+   * Add-LatestDownloadLinkData と同じ条件で
+   * Excelリンクを探す。
+   */
+  $downloadInfo =
+    find_latest_excel_link_in_html_(
+      $html,
+      $pageUrl,
+      $sectionTitle
+    );
+
+  $downloadUrl =
+    $downloadInfo['download_url'];
+
+  $rowText =
+    $downloadInfo['row_text'];
+
+  fwrite(
+    STDOUT,
+    "[INFO] latest excel link ready: " .
+    "section={$sectionTitle} " .
+    "row={$rowText} " .
+    "url={$downloadUrl}\n"
+  );
+
+  /*
+   * 一覧ページ取得時に確立したsticky proxyを
+   * そのまま使用してExcel本体を取得する。
+   */
+  $binaryResponse =
+    http_get_binary_with_meta_(
+      $downloadUrl,
+      array(
+        'referer' => $pageUrl,
+        'timeout' =>
+          (int)($opt['timeout'] ?? 120),
+      )
+    );
+
+  return array(
+    'data' =>
+      $binaryResponse['data'],
+
+    'http_code' =>
+      $binaryResponse['http_code'],
+
+    'proxy' =>
+      $proxy,
+
+    'download_url' =>
+      $downloadUrl,
+
+    'row_text' =>
+      $rowText,
+  );
+}
+
+/**
+ * レンダリング済みHTMLから、
+ * 指定セクションに属する最初のExcelリンクを取得する。
+ *
+ * @return array{
+ *   download_url:string,
+ *   row_text:string
+ * }
+ */
+function find_latest_excel_link_in_html_(
+  string $html,
+  string $pageUrl,
+  string $sectionTitle
+): array {
+
+  libxml_use_internal_errors(true);
+
+  $dom =
+    new DOMDocument();
+
+  $loaded =
+    $dom->loadHTML(
+      '<?xml encoding="UTF-8">' .
+      $html,
+      LIBXML_NOWARNING |
+      LIBXML_NOERROR
+    );
+
+  libxml_clear_errors();
+
+  if (!$loaded) {
+    throw new RuntimeException(
+      "Excel一覧ページのDOM変換に失敗しました: " .
+      $pageUrl
+    );
+  }
+
+  $xpath =
+    new DOMXPath($dom);
+
+  /*
+   * h1～h6から見出しを完全一致で探す。
+   */
+  $headingNodes =
+    $xpath->query(
+      "//h1 | //h2 | //h3 | //h4 | //h5 | //h6"
+    );
+
+  $heading =
+    null;
+
+  if ($headingNodes) {
+    foreach ($headingNodes as $node) {
+      $text =
+        normalize_download_text_(
+          $node->textContent
+        );
+
+      if ($text === $sectionTitle) {
+        $heading =
+          $node;
+        break;
+      }
+    }
+  }
+
+  if ($heading === null) {
+    throw new RuntimeException(
+      "Excel取得セクション見出しが見つかりません: " .
+      $sectionTitle
+    );
+  }
+
+  /*
+   * 見出しより後ろにある最初のtable。
+   */
+  $tableNodes =
+    $xpath->query(
+      "following::table[1]",
+      $heading
+    );
+
+  if (
+    !$tableNodes ||
+    $tableNodes->length !== 1
+  ) {
+    throw new RuntimeException(
+      "Excel取得対象tableが見つかりません: " .
+      $sectionTitle
+    );
+  }
+
+  $table =
+    $tableNodes->item(0);
+
+  /*
+   * table内の最初の.xls/.xlsxリンク。
+   */
+  $linkNodes =
+    $xpath->query(
+      ".//a[@href]",
+      $table
+    );
+
+  $excelLink =
+    null;
+
+  if ($linkNodes) {
+    foreach ($linkNodes as $linkNode) {
+      $href =
+        trim(
+          (string)$linkNode->getAttribute(
+            'href'
+          )
+        );
+
+      if (
+        preg_match(
+          '/\.(xlsx|xls)(?:[?#].*)?$/i',
+          $href
+        )
+      ) {
+        $excelLink =
+          $linkNode;
+        break;
+      }
+    }
+  }
+
+  if ($excelLink === null) {
+    throw new RuntimeException(
+      "Excelリンクが見つかりません: " .
+      $sectionTitle
+    );
+  }
+
+  $href =
+    trim(
+      (string)$excelLink->getAttribute(
+        'href'
+      )
+    );
+
+  $downloadUrl =
+    resolve_download_url_(
+      $pageUrl,
+      $href
+    );
+
+  /*
+   * PowerShell版と同様に、
+   * Excelリンクを含むtrの文字列も取得する。
+   */
+  $rowNode =
+    $excelLink;
+
+  while (
+    $rowNode !== null &&
+    strtolower($rowNode->nodeName) !== 'tr'
+  ) {
+    $rowNode =
+      $rowNode->parentNode;
+  }
+
+  if ($rowNode === null) {
+    throw new RuntimeException(
+      "Excelリンクを含む行が取得できません: " .
+      $sectionTitle
+    );
+  }
+
+  $rowText =
+    normalize_download_text_(
+      $rowNode->textContent
+    );
+
+  return array(
+    'download_url' =>
+      $downloadUrl,
+
+    'row_text' =>
+      $rowText,
+  );
+}
+
+/**
+ * バイナリファイルをWebshare proxy経由で取得する。
+ *
+ * @return array{
+ *   data:string,
+ *   http_code:int,
+ *   proxy:string,
+ *   final_url:string,
+ *   content_type:string
+ * }
+ */
+function http_get_binary_with_meta_(
+  string $url,
+  array $opt = []
+): array {
+
+  $timeout =
+    (int)($opt['timeout'] ?? 120);
+
+  $referer =
+    (string)($opt['referer'] ?? '');
+
+  /*
+   * sticky session中なら、
+   * 一覧ページ取得時と同じproxyが返る。
+   */
+  $cred =
+    get_proxy_credential_for_url_(
+      $url
+    );
+
+  $proxyHp =
+    proxy_hostport_(
+      (string)$cred['proxy']
+    );
+
+  $ch =
+    curl_init();
+
+  $headers = array(
+    'Accept: application/vnd.ms-excel,' .
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,' .
+      'application/octet-stream,*/*;q=0.8',
+
+    'Accept-Language: ja,en-US;q=0.9,en;q=0.8',
+    'Cache-Control: no-cache',
+    'Pragma: no-cache',
+  );
+
+  curl_setopt_array(
+    $ch,
+    array(
+      CURLOPT_URL =>
+        $url,
+
+      CURLOPT_RETURNTRANSFER =>
+        true,
+
+      CURLOPT_FOLLOWLOCATION =>
+        true,
+
+      CURLOPT_MAXREDIRS =>
+        5,
+
+      CURLOPT_CONNECTTIMEOUT =>
+        $timeout,
+
+      CURLOPT_TIMEOUT =>
+        $timeout,
+
+      CURLOPT_SSL_VERIFYPEER =>
+        true,
+
+      CURLOPT_SSL_VERIFYHOST =>
+        2,
+
+      CURLOPT_PROXY =>
+        $cred['proxy'],
+
+      CURLOPT_PROXYUSERPWD =>
+        $cred['user'] .
+        ':' .
+        $cred['pass'],
+
+      CURLOPT_HTTPHEADER =>
+        $headers,
+
+      CURLOPT_USERAGENT =>
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' .
+        'AppleWebKit/537.36 (KHTML, like Gecko) ' .
+        'Chrome/136.0.0.0 Safari/537.36',
+    )
+  );
+
+  if ($referer !== '') {
+    curl_setopt(
+      $ch,
+      CURLOPT_REFERER,
+      $referer
+    );
+  }
+
+  $body =
+    curl_exec($ch);
+
+  $errorNo =
+    curl_errno($ch);
+
+  $error =
+    curl_error($ch);
+
+  $httpCode =
+    (int)curl_getinfo(
+      $ch,
+      CURLINFO_HTTP_CODE
+    );
+
+  $finalUrl =
+    (string)curl_getinfo(
+      $ch,
+      CURLINFO_EFFECTIVE_URL
+    );
+
+  $contentType =
+    (string)curl_getinfo(
+      $ch,
+      CURLINFO_CONTENT_TYPE
+    );
+
+  curl_close($ch);
+
+  if ($errorNo !== 0) {
+    remember_url_proxy_failure_(
+      $url,
+      (string)$cred['proxy']
+    );
+
+    throw new RuntimeException(
+      "Excelダウンロード失敗: " .
+      "curl error({$errorNo}) {$error}"
+    );
+  }
+
+  if ($httpCode !== 200) {
+    remember_url_proxy_failure_(
+      $url,
+      (string)$cred['proxy']
+    );
+
+    throw new RuntimeException(
+      "ExcelダウンロードHTTPエラー: " .
+      "{$httpCode} {$url}"
+    );
+  }
+
+  if (
+    $body === false ||
+    $body === ''
+  ) {
+    remember_url_proxy_failure_(
+      $url,
+      (string)$cred['proxy']
+    );
+
+    throw new RuntimeException(
+      "Excelダウンロード結果が空です: " .
+      $url
+    );
+  }
+
+  return array(
+    'data' =>
+      (string)$body,
+
+    'http_code' =>
+      $httpCode,
+
+    'proxy' =>
+      $proxyHp,
+
+    'final_url' =>
+      $finalUrl,
+
+    'content_type' =>
+      $contentType,
+  );
+}
+
+/**
+ * HTML上のリンクを絶対URLへ変換する。
+ */
+function resolve_download_url_(
+  string $baseUrl,
+  string $href
+): string {
+
+  $href =
+    trim($href);
+
+  if ($href === '') {
+    throw new RuntimeException(
+      'Download href is empty.'
+    );
+  }
+
+  /*
+   * すでに絶対URL。
+   */
+  if (
+    preg_match(
+      '#^https?://#i',
+      $href
+    )
+  ) {
+    return
+      $href;
+  }
+
+  $base =
+    parse_url(
+      $baseUrl
+    );
+
+  if (
+    !is_array($base) ||
+    empty($base['scheme']) ||
+    empty($base['host'])
+  ) {
+    throw new RuntimeException(
+      "Base URL is invalid: {$baseUrl}"
+    );
+  }
+
+  $origin =
+    $base['scheme'] .
+    '://' .
+    $base['host'];
+
+  if (
+    isset($base['port'])
+  ) {
+    $origin .=
+      ':' .
+      $base['port'];
+  }
+
+  /*
+   * //example.com/...
+   */
+  if (
+    strpos(
+      $href,
+      '//'
+    ) === 0
+  ) {
+    return
+      $base['scheme'] .
+      ':' .
+      $href;
+  }
+
+  /*
+   * /path/...
+   */
+  if (
+    strpos(
+      $href,
+      '/'
+    ) === 0
+  ) {
+    return
+      $origin .
+      $href;
+  }
+
+  /*
+   * 相対パス。
+   */
+  $basePath =
+    isset($base['path'])
+      ? (string)$base['path']
+      : '/';
+
+  $directory =
+    preg_replace(
+      '#/[^/]*$#',
+      '/',
+      $basePath
+    );
+
+  $path =
+    $directory .
+    $href;
+
+  /*
+   * ./ と ../ を解決する。
+   */
+  $segments =
+    explode(
+      '/',
+      $path
+    );
+
+  $resolved =
+    array();
+
+  foreach ($segments as $segment) {
+    if (
+      $segment === '' ||
+      $segment === '.'
+    ) {
+      continue;
+    }
+
+    if ($segment === '..') {
+      array_pop(
+        $resolved
+      );
+      continue;
+    }
+
+    $resolved[] =
+      $segment;
+  }
+
+  return
+    $origin .
+    '/' .
+    implode(
+      '/',
+      $resolved
+    );
+}
+
+/**
+ * ダウンロードページ用の文字列正規化。
+ */
+function normalize_download_text_(
+  $value
+): string {
+
+  $value =
+    html_entity_decode(
+      (string)$value,
+      ENT_QUOTES |
+      ENT_HTML5,
+      'UTF-8'
+    );
+
+  $value =
+    preg_replace(
+      '/\s+/u',
+      ' ',
+      $value
+    );
+
+  return
+    trim(
+      (string)$value
+    );
+}
+
+/**
  * 初回だけ指定銘柄で全Webshareプロキシをテストし、
  * 成功したプロキシだけを使って http_get_text_browser() を実行する。
  *
