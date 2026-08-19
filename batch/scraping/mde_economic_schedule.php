@@ -197,10 +197,25 @@ function parse_economic_schedule_html_($html, $targetYmd) {
       continue;
     }
 
+    /*
+     * 時刻を解析する。
+     *
+     * サイト上では翌日深夜の時刻を
+     * 24:00～29:59 の形式で表記する場合がある。
+     *
+     * 24時以降の場合は翌日の時刻へ変換する。
+     *
+     * 例:
+     *   23:00 → 当日 23:00
+     *   24:00 → 翌日 00:00
+     *   25:30 → 翌日 01:30
+     *   29:00 → 翌日 05:00
+     */
     if (
       !preg_match(
-        '/^([01]?\d|2[0-3]):([0-5]\d)$/',
-        $time
+        '/^(\d{1,2}):([0-5]\d)$/',
+        $time,
+        $timeMatches
       )
     ) {
       throw new RuntimeException(
@@ -208,18 +223,42 @@ function parse_economic_schedule_html_($html, $targetYmd) {
       );
     }
 
-    /*
-     * HH:mm に統一する。
-     */
-    list($hour, $minute) = explode(':', $time);
+    $hour = (int)$timeMatches[1];
+    $minute = (int)$timeMatches[2];
+
+    if ($hour > 29) {
+      throw new RuntimeException(
+        "経済指標の時間が不正です: {$time}"
+      );
+    }
+
+    $date = $currentDate;
+
+    if ($hour >= 24) {
+      $hour -= 24;
+
+      $nextDate = DateTime::createFromFormat(
+        '!Y-m-d',
+        $currentDate
+      );
+
+      if ($nextDate === false) {
+        throw new RuntimeException(
+          "経済指標の日付を翌日へ変換できません: {$currentDate}"
+        );
+      }
+
+      $nextDate->modify('+1 day');
+      $date = $nextDate->format('Y-m-d');
+    }
 
     $time = sprintf(
       '%02d:%02d',
-      (int)$hour,
-      (int)$minute
+      $hour,
+      $minute
     );
 
-    $dateTime = $currentDate . ' ' . $time;
+    $dateTime = $date . ' ' . $time;
 
     /*
      * 重要度。

@@ -24,9 +24,12 @@
  *   global_buffett_indicator：世界バフェット指数
  *   fed_total_assets：FRB総資産
  *   us_high_yield_spread：米国ハイイールドスプレッド
+ *   us_corporate_spread：米国社債スプレッド
  *   gdpnow：GDPNow
  *   jpx_arbitrage_daily：JPX裁定取引の状況（日別）
  *   jpx_program_trading_weekly：JPXプログラム売買の状況（週間）
+ *   boj_current_account_final：日銀当座預金増減要因（確報）
+ *   boj_operation_offer_results：日銀オペレーション・オファー／落札結果
  *
  * 実行例:
  *   php market_data_extract.php
@@ -60,9 +63,12 @@ require __DIR__ . '/mde_global_market_realtime.php';
 require __DIR__ . '/mde_global_buffett_indicator.php';
 require __DIR__ . '/mde_fed_total_assets.php';
 require __DIR__ . '/mde_us_high_yield_spread.php';
+require __DIR__ . '/mde_us_corporate_spread.php';
 require __DIR__ . '/mde_gdpnow.php';
 require __DIR__ . '/mde_jpx_arbitrage_daily.php';
 require __DIR__ . '/mde_jpx_program_trading_weekly.php';
+require __DIR__ . '/mde_boj_current_account_final.php';
+require __DIR__ . '/mde_boj_operation_offer_results.php';
 
 // ===== 設定 =====
 date_default_timezone_set('Asia/Tokyo');
@@ -214,14 +220,36 @@ $TARGET_DEFINITIONS = array(
     'url' => 'https://www.boj.or.jp/statistics/boj/fm/juq/index.htm',
     'file' => '10_download_03_boj_current_account_final.xlsx',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
+    /*
+     * HTMLではなくExcelバイナリを処理する。
+     */
+    'content_type' => 'xlsx',
+
+    /*
+     * --source=web時は対象ページから
+     * 指定セクション内の最新Excelを取得する。
+     */
+    'download_type' => 'latest_excel',
+    'download_section_title' => '公表データ（確報）',
   ),
   'boj_operation_offer_results' => array(
     'name' => '日銀オペレーション・オファー／落札結果',
     'url' => 'https://www.boj.or.jp/statistics/boj/fm/ope/index.htm',
     'file' => '10_download_04_boj_operation_offer_results.xlsx',
     'groups' => array(),
-    'implemented' => false,
+    'implemented' => true,
+    /*
+     * HTMLではなくExcelバイナリを処理する。
+     */
+    'content_type' => 'xlsx',
+
+    /*
+     * --source=web時は対象ページから
+     * 指定セクション内の最新Excelを取得する。
+     */
+    'download_type' => 'latest_excel',
+    'download_section_title' => 'オファー／落札結果',
   ),
   'global_market_realtime' => array(
     'name' => '世界の株価リアルタイム',
@@ -248,6 +276,13 @@ $TARGET_DEFINITIONS = array(
     'name' => '米国ハイイールドスプレッド',
     'url' => 'https://fred.stlouisfed.org/series/BAMLH0A0HYM2',
     'file' => '09_extract_17_us_high_yield_spread.html',
+    'groups' => array('GROUP1'),
+    'implemented' => true,
+  ),
+  'us_corporate_spread' => array(
+    'name' => '米国社債スプレッド',
+    'url' => 'https://fred.stlouisfed.org/series/BAMLC0A0CM',
+    'file' => '09_extract_20_us_corporate_spread.html',
     'groups' => array('GROUP1'),
     'implemented' => true,
   ),
@@ -622,6 +657,18 @@ try {
             );
           break;
 
+        case 'us_corporate_spread':
+          $parsed =
+            parse_us_corporate_spread_html_(
+              $data
+            );
+
+          $reportSection =
+            build_us_corporate_spread_message_(
+              $parsed
+            );
+          break;
+
         case 'gdpnow':
           $parsed =
             parse_gdpnow_html_(
@@ -654,6 +701,32 @@ try {
 
           $reportSection =
             build_jpx_program_trading_weekly_message_(
+              $parsed
+            );
+          break;
+
+        case 'boj_current_account_final':
+          $parsed =
+            parse_boj_current_account_final_xlsx_(
+              $data,
+              $targetYmd
+            );
+
+          $reportSection =
+            build_boj_current_account_final_message_(
+              $parsed
+            );
+          break;
+
+        case 'boj_operation_offer_results':
+          $parsed =
+            parse_boj_operation_offer_results_xlsx_(
+              $data,
+              $targetYmd
+            );
+
+          $reportSection =
+            build_boj_operation_offer_results_message_(
               $parsed
             );
           break;

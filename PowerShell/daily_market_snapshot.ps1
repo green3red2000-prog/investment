@@ -277,6 +277,7 @@ $Items = @(
   @{ Url = 'https://fred.stlouisfed.org/series/BAMLH0A0HYM2'; File = '09_extract_17_us_high_yield_spread.html'; Check = 0 },
   @{ Url = 'https://www.atlantafed.org/research-and-data/data/gdpnow'; File = '09_extract_18_gdpnow.html'; Check = 0 },
   @{ Url = 'https://nikkei225jp.com/'; File = '09_extract_19_global_market_realtime.html'; Check = 0 },
+  @{ Url = 'https://fred.stlouisfed.org/series/BAMLC0A0CM'; File = '09_extract_20_us_corporate_spread.html'; Check = 0 },
 
   @{ Url = 'https://www.jpx.co.jp/markets/statistics-equities/program/index.html'; File = '10_download_01_jpx_arbitrage_daily.xls';  Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = '裁定取引の状況（日別）' },
   @{ Url = 'https://www.jpx.co.jp/markets/statistics-equities/program/01.html'; File = '10_download_02_jpx_program_trading_weekly.xls'; Check = 0; DownloadType = 'LatestExcel'; DownloadSectionTitle = 'プログラム売買の状況（週間）' },
