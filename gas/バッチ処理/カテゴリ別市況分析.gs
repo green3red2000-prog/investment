@@ -192,8 +192,20 @@ function run_category_market_summary() {
 
     console.log('[DONE] main send');
 
+    // (6) レポートファイルの出力
+    const reportBody = buildReportSummary_(summary, new Date());
+    const reportName = `カテゴリ別市況分析_レポート_${todayStr}.txt`;
+
+    writeTextReport_(
+      dstFolder,
+      reportName,
+      reportBody
+    );
+
+    console.log(`[DONE] report output: ${reportName}`);
+
     /*
-     * 集計・コピー・メール送信がすべて正常終了した後に記録する。
+     * 集計・コピー・メール送信・レポート出力がすべて正常終了した後に記録する。
      *
      * 途中でエラーになった場合は記録されないため、
      * 次回の5分トリガーで再実行できる。
@@ -278,6 +290,18 @@ function run_category_market_summary_recovery() {
     body: summary,
   });
   console.log('[DONE] main send (recovery)');
+
+  // (6) レポートファイルの出力
+  const reportBody = buildReportSummary_(summary, new Date());
+  const reportName = `カテゴリ別市況分析_レポート_${ds}.txt`;
+
+  writeTextReport_(
+    dstFolder,
+    reportName,
+    reportBody
+  );
+
+  console.log(`[DONE] report output (recovery): ${reportName}`);
 
   console.log('[END] run_category_market_summary_recovery');
 }
@@ -1974,7 +1998,84 @@ function buildMailSummary_(outSs, copiedUrl) {
 
   return lines.join('\n');
 }
+/**
+ * (6) レポート本文を作る
+ *
+ * メール本文をベースに、
+ * ・冒頭をレポート用タイトル＋処理日時へ変更
+ * ・末尾の「分析結果の詳細は以下になります。」とURLを削除
+ */
+function buildReportSummary_(mailSummary, now) {
+  const mailLines = String(mailSummary || '').split('\n');
 
+  // メール本文冒頭
+  //   本日のカテゴリ別市況分析を終了しました。
+  //
+  //   概要は以下になります。
+  //
+  // の4行を除外
+  let bodyLines = mailLines.slice(4);
+
+  // メール本文末尾
+  //   分析結果の詳細は以下になります。
+  //   URL：
+  //
+  // を削除
+  const detailIndex = bodyLines.findIndex(
+    line => line === '分析結果の詳細は以下になります。'
+  );
+
+  if (detailIndex >= 0) {
+    bodyLines = bodyLines.slice(0, detailIndex);
+  }
+
+  // 末尾の空行を除去
+  while (
+    bodyLines.length > 0 &&
+    String(bodyLines[bodyLines.length - 1]).trim() === ''
+  ) {
+    bodyLines.pop();
+  }
+
+  const processedAt = Utilities.formatDate(
+    now,
+    TZ,
+    'yyyy-MM-dd HH:mm'
+  );
+
+  const lines = [];
+
+  lines.push('■カテゴリ別市況分析');
+  lines.push(`処理日時：${processedAt}`);
+  lines.push('');
+  lines.push(...bodyLines);
+  lines.push('');
+
+  return lines.join('\n');
+}
+/**
+ * TXTレポートファイルを出力する。
+ *
+ * 同名ファイルが存在する場合は削除してから再作成する。
+ */
+function writeTextReport_(folder, fileName, body) {
+  if (!folder) {
+    throw new Error('レポート出力先フォルダが指定されていません。');
+  }
+
+  // 同名ファイルが存在する場合はゴミ箱へ移動
+  const files = folder.getFilesByName(fileName);
+
+  while (files.hasNext()) {
+    files.next().setTrashed(true);
+  }
+
+  folder.createFile(
+    fileName,
+    body,
+    MimeType.PLAIN_TEXT
+  );
+}
 /** ===== ここから下は buildMailSummary_ 用の補助 ===== */
 
 function detectTableCols_(sheet) {
