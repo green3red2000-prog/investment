@@ -1,5 +1,5 @@
 # HTML保存ファイル
-*.html
+# *.html
 
 # CSVファイル
 *.csv
@@ -26,5 +26,7 @@ ppk/
 batch/j_quants/conf/config.php
 
 # データファイル
-data/kabutan/daily_market_snapshot/*/10_download_*.xls
-data/kabutan/daily_market_snapshot/*/10_download_*.xlsx
+#data/kabutan/daily_market_snapshot/*/10_download_*.xls
+#data/kabutan/daily_market_snapshot/*/10_download_*.xlsx
+data/kabutan/daily_market_snapshot/*
+data/kabutan/basicinfo/*
