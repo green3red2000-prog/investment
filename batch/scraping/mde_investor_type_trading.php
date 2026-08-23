@@ -662,7 +662,7 @@ function build_investor_type_trading_message_(
   /*
    * 指定されたレポート見出しを使用する。
    */
-  $lines[] = "【東証プライム市場　新高値/新安値】";
+  $lines[] = "【東証 投資部門別売買状況】";
 
   /*
    * 列見出し。
