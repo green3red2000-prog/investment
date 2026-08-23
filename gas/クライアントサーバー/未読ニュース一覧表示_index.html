@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+
+  <meta charset="UTF-8">
+
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        "Yu Gothic",
+        "Meiryo",
+        sans-serif;
+      background-color: #f5f5f5;
+      color: #222222;
+    }
+
+    .container {
+      width: auto;
+      max-width: none;
+      margin: 0 150px;
+    }
+
+    .top-area {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: 12px;
+      margin-bottom: 16px;
+      background-color: #ffffff;
+      border: 1px solid #dddddd;
+      border-radius: 8px;
+      box-shadow:
+        0 2px 6px rgba(0, 0, 0, 0.08);
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .copy-button,
+    .save-button,
+    .move-button,
+    .reload-button {
+      padding: 10px 18px;
+      border: 0;
+      border-radius: 6px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .copy-button {
+      background-color: #1976d2;
+      color: #ffffff;
+    }
+
+    .copy-button:hover {
+      background-color: #125ea8;
+    }
+
+    .save-button {
+      background-color: #2e7d32;
+      color: #ffffff;
+    }
+
+    .save-button:hover {
+      background-color: #236327;
+    }
+
+    .move-button {
+      background-color: #fff3cd;
+      color: #664d03;
+    }
+
+    .move-button:hover {
+      background-color: #ffe69c;
+    }
+
+    .reload-button {
+      background-color: #eeeeee;
+      color: #222222;
+    }
+
+    .reload-button:hover {
+      background-color: #dddddd;
+    }
+
+    .copy-button:disabled,
+    .save-button:disabled,
+    .move-button:disabled,
+    .reload-button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .status {
+      font-size: 14px;
+      color: #555555;
+    }
+
+    .prompt-area {
+      margin-top: 16px;
+    }
+
+    .prompt-label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+      font-weight: bold;
+    }
+
+    .prompt-textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 130px;
+      padding: 10px;
+      border: 1px solid #cccccc;
+      border-radius: 6px;
+      font-family:
+        "BIZ UDPGothic",
+        "Yu Gothic",
+        "Meiryo",
+        sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      resize: vertical;
+    }
+
+    .prompt-textarea:focus {
+      outline:
+        2px solid rgba(25, 118, 210, 0.25);
+      border-color: #1976d2;
+    }
+
+    .news-output {
+      background-color: #ffffff;
+      border: 1px solid #dddddd;
+      border-radius: 8px;
+      overflow: hidden;
+      font-family:
+        "BIZ UDPGothic",
+        "Yu Gothic",
+        "Meiryo",
+        sans-serif;
+      font-size: 14px;
+    }
+
+    .table-wrapper {
+      width: 100%;
+      max-height: calc(100vh - 280px);
+      overflow-x: auto;
+    }
+
+    .news-table {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: collapse;
+      table-layout: auto;
+    }
+
+    .news-table th,
+    .news-table td {
+      padding: 10px 12px;
+      border-right: 1px solid #dddddd;
+      border-bottom: 1px solid #dddddd;
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.55;
+    }
+
+    .news-table th:last-child,
+    .news-table td:last-child {
+      border-right: 0;
+    }
+
+    .news-table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .news-table th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background-color: #eeeeee;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    .news-table tbody tr:nth-child(even) {
+      background-color: #fafafa;
+    }
+
+    /*
+     * 前回位置。
+     *
+     * nth-childの背景色より優先させるため、
+     * tdに背景色を指定する。
+     */
+    .news-table tbody tr.last-read-row td {
+      background-color: #fdecec;
+    }
+
+    /*
+     * 見出しクリック位置。
+     *
+     * 赤色と重複した場合は
+     * オレンジ色を優先する。
+     */
+    .news-table tbody tr.opened-row td {
+      background-color: #fff1dc;
+    }
+
+    /*
+     * 通常行だけホバー色を付ける。
+     */
+    .news-table tbody tr:not(.last-read-row):not(.opened-row):hover {
+      background-color: #fffde7;
+    }
+
+    /*
+     * 赤色の行をホバーしても
+     * 赤色を維持する。
+     */
+    .news-table tbody tr.last-read-row:hover td {
+      background-color: #fdecec;
+    }
+
+    /*
+     * オレンジ色の行をホバーしても
+     * オレンジ色を維持する。
+     */
+    .news-table tbody tr.opened-row:hover td {
+      background-color: #fff1dc;
+    }
+
+    .col-number {
+      width: 55px;
+      min-width: 55px;
+      text-align: center !important;
+      white-space: nowrap;
+    }
+
+    .col-time {
+      width: 170px;
+      min-width: 170px;
+      white-space: nowrap;
+    }
+
+    .col-source {
+      width: auto;
+      white-space: nowrap;
+    }
+
+    .col-title {
+      width: auto;
+      white-space: nowrap;
+    }
+
+    /*
+     * No.リンクと見出しリンクは
+     * 周囲と同じ文字色にする。
+     */
+    .number-link,
+    .news-url {
+      color: inherit;
+      text-decoration: none;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .number-link:hover,
+    .news-url:hover {
+      color: inherit;
+      text-decoration: underline;
+    }
+
+    /*
+     * No.保存中は連打防止
+     */
+    .number-link.saving {
+      pointer-events: none;
+      opacity: 0.5;
+    }
+
+    .message-area {
+      padding: 18px;
+    }
+
+    .loading {
+      color: #666666;
+    }
+
+    .error {
+      color: #c62828;
+    }
+
+    .empty {
+      color: #666666;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 10px;
+      }
+
+      .container {
+        margin: 0;
+      }
+
+      .top-area {
+        padding: 10px;
+      }
+
+      .copy-button,
+      .save-button,
+      .move-button,
+      .reload-button {
+        padding: 9px 12px;
+        font-size: 14px;
+      }
+
+      .prompt-textarea {
+        min-height: 180px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <div class="top-area">
+
+      <div class="toolbar">
+        <button
+          id="copyButton"
+          class="copy-button"
+          type="button"
+          onclick="copyAllText()"
+          disabled
+        >
+          全てコピー
+        </button>
+
+        <button
+          id="savePromptButton"
+          class="save-button"
+          type="button"
+          onclick="saveAiPrompt()"
+          disabled
+        >
+          AIプロンプト保存
+        </button>
+
+        <button
+          id="moveToLastReadButton"
+          class="move-button"
+          type="button"
+          onclick="moveToLastReadPosition()"
+          disabled
+        >
+          既読位置へ移動
+        </button>
+
+        <button
+          id="reloadButton"
+          class="reload-button"
+          type="button"
+          onclick="loadInitialData()"
+        >
+          再読み込み
+        </button>
+
+        <span
+          id="status"
+          class="status"
+        ></span>
+      </div>
+
+      <div class="prompt-area">
+        <label
+          for="aiPrompt"
+          class="prompt-label"
+        >
+          AIプロンプト
+        </label>
+
+        <textarea
+          id="aiPrompt"
+          class="prompt-textarea"
+          disabled
+        ></textarea>
+      </div>
+
+    </div>
+
+    <div
+      id="newsOutput"
+      class="news-output"
+    >
+      <div class="message-area loading">
+        読み込み中です...
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    /**
+     * 読み込んだ未読ニュース
+     */
+    let currentNewsList = [];
+
+    /**
+     * スクリプトプロパティから
+     * 復元した前回位置のニュースID
+     */
+    let currentLastReadId = null;
+
+    /**
+     * 初期表示
+     */
+    window.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        loadInitialData();
+      }
+    );
+
+    /**
+     * GASから初期表示データを取得する
+     */
+    function loadInitialData() {
+      const copyButton =
+        document.getElementById(
+          'copyButton'
+        );
+
+      const savePromptButton =
+        document.getElementById(
+          'savePromptButton'
+        );
+
+      const moveToLastReadButton =
+        document.getElementById(
+          'moveToLastReadButton'
+        );
+
+      const reloadButton =
+        document.getElementById(
+          'reloadButton'
+        );
+
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      const newsOutput =
+        document.getElementById(
+          'newsOutput'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      copyButton.disabled = true;
+      savePromptButton.disabled = true;
+      moveToLastReadButton.disabled = true;
+      reloadButton.disabled = true;
+      aiPrompt.disabled = true;
+
+      currentNewsList = [];
+      currentLastReadId = null;
+
+      newsOutput.className =
+        'news-output';
+
+      newsOutput.innerHTML = '';
+
+      const loading =
+        document.createElement('div');
+
+      loading.className =
+        'message-area loading';
+
+      loading.textContent =
+        '読み込み中です...';
+
+      newsOutput.appendChild(loading);
+
+      status.textContent = '';
+
+      google.script.run
+        .withSuccessHandler(
+          showInitialData
+        )
+        .withFailureHandler(
+          showLoadError
+        )
+        .getInitialData();
+    }
+
+    /**
+     * 初期表示データを画面へ反映する
+     */
+    function showInitialData(data) {
+      const copyButton =
+        document.getElementById(
+          'copyButton'
+        );
+
+      const savePromptButton =
+        document.getElementById(
+          'savePromptButton'
+        );
+
+      const moveToLastReadButton =
+        document.getElementById(
+          'moveToLastReadButton'
+        );
+
+      const reloadButton =
+        document.getElementById(
+          'reloadButton'
+        );
+
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      aiPrompt.value =
+        data?.prompt ?? '';
+
+      currentNewsList =
+        Array.isArray(data?.newsList)
+          ? data.newsList
+          : [];
+
+      currentLastReadId =
+        String(
+          data?.lastReadId ?? ''
+        ).trim() || null;
+
+      aiPrompt.disabled = false;
+      savePromptButton.disabled = false;
+      reloadButton.disabled = false;
+
+      showUnreadNews(
+        currentNewsList,
+        currentLastReadId
+      );
+
+      copyButton.disabled =
+        currentNewsList.length === 0;
+
+      moveToLastReadButton.disabled =
+        currentLastReadId === null;
+    }
+
+    /**
+     * 未読ニュースをテーブル表示する
+     */
+    function showUnreadNews(
+      newsList,
+      lastReadId
+    ) {
+      const newsOutput =
+        document.getElementById(
+          'newsOutput'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      newsOutput.className =
+        'news-output';
+
+      newsOutput.innerHTML = '';
+
+      if (
+        !Array.isArray(newsList) ||
+        newsList.length === 0
+      ) {
+        const empty =
+          document.createElement('div');
+
+        empty.className =
+          'message-area empty';
+
+        empty.textContent =
+          '未読ニュースはありません。';
+
+        newsOutput.appendChild(empty);
+
+        status.textContent = '0件';
+        return;
+      }
+
+      const wrapper =
+        document.createElement('div');
+
+      wrapper.className =
+        'table-wrapper';
+
+      const table =
+        document.createElement('table');
+
+      table.className =
+        'news-table';
+
+      const thead =
+        document.createElement('thead');
+
+      const headerRow =
+        document.createElement('tr');
+
+      headerRow.appendChild(
+        createHeaderCell(
+          'No.',
+          'col-number'
+        )
+      );
+
+      headerRow.appendChild(
+        createHeaderCell(
+          '時刻',
+          'col-time'
+        )
+      );
+
+      headerRow.appendChild(
+        createHeaderCell(
+          'ソース',
+          'col-source'
+        )
+      );
+
+      headerRow.appendChild(
+        createHeaderCell(
+          '見出し',
+          'col-title'
+        )
+      );
+
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody =
+        document.createElement('tbody');
+
+      newsList.forEach(
+        (news, index) => {
+          const displayNumber =
+            index + 1;
+
+          const row =
+            document.createElement('tr');
+
+          row.dataset.number =
+            String(displayNumber);
+
+          row.dataset.newsId =
+            String(news.id ?? '');
+
+          /*
+           * 保存済みニュースIDの行なら
+           * 薄い赤色にする。
+           */
+          if (
+            String(news.id ?? '') ===
+            lastReadId
+          ) {
+            row.classList.add(
+              'last-read-row'
+            );
+          }
+
+          row.appendChild(
+            createNumberCell(
+              displayNumber,
+              news.id ?? '',
+              row
+            )
+          );
+
+          row.appendChild(
+            createTextCell(
+              news.time ?? '',
+              'col-time'
+            )
+          );
+
+          row.appendChild(
+            createTextCell(
+              news.source ?? '',
+              'col-source'
+            )
+          );
+
+          row.appendChild(
+            createTitleCell(
+              news.title ?? '',
+              news.url ?? '',
+              row
+            )
+          );
+
+          tbody.appendChild(row);
+        }
+      );
+
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
+      newsOutput.appendChild(wrapper);
+
+      status.textContent =
+        `${newsList.length}件`;
+    }
+
+    /**
+     * テーブル見出しを作る
+     */
+    function createHeaderCell(
+      text,
+      className
+    ) {
+      const th =
+        document.createElement('th');
+
+      th.className = className;
+      th.textContent = text;
+
+      return th;
+    }
+
+    /**
+     * 通常のテーブルセルを作る
+     */
+    function createTextCell(
+      text,
+      className
+    ) {
+      const td =
+        document.createElement('td');
+
+      td.className = className;
+      td.textContent = text;
+
+      return td;
+    }
+
+    /**
+     * No.リンクセルを作る
+     */
+    function createNumberCell(
+      number,
+      newsId,
+      rowElement
+    ) {
+      const td =
+        document.createElement('td');
+
+      td.className = 'col-number';
+
+      const link =
+        document.createElement('a');
+
+      link.className = 'number-link';
+      link.href = '#';
+      link.textContent = String(number);
+
+      link.title =
+        `No.${number}の記事を前回位置として保存`;
+
+      link.addEventListener(
+        'click',
+        event => {
+          event.preventDefault();
+
+          saveLastReadPosition(
+            newsId,
+            number,
+            rowElement,
+            link
+          );
+        }
+      );
+
+      td.appendChild(link);
+
+      return td;
+    }
+
+    /**
+     * ニュースIDをスクリプトプロパティへ保存する
+     */
+    function saveLastReadPosition(
+      newsId,
+      number,
+      rowElement,
+      linkElement
+    ) {
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      const moveToLastReadButton =
+        document.getElementById(
+          'moveToLastReadButton'
+        );
+
+      const id =
+        String(newsId ?? '').trim();
+
+      if (id === '') {
+        status.textContent =
+          '保存するニュースIDがありません';
+
+        return;
+      }
+
+      linkElement.classList.add(
+        'saving'
+      );
+
+      status.textContent =
+        `No.${number}の位置を保存中です...`;
+
+      google.script.run
+        .withSuccessHandler(result => {
+          linkElement.classList.remove(
+            'saving'
+          );
+
+          /*
+           * 以前の赤色をすべて解除する。
+           * これにより赤色は常に1行だけ。
+           */
+          document
+            .querySelectorAll(
+              '.news-table tbody tr.last-read-row'
+            )
+            .forEach(row => {
+              row.classList.remove(
+                'last-read-row'
+              );
+            });
+
+          rowElement.classList.add(
+            'last-read-row'
+          );
+
+          currentLastReadId =
+            String(
+              result?.id ?? id
+            ).trim() || null;
+
+          moveToLastReadButton.disabled =
+            currentLastReadId === null;
+
+          showTemporaryStatus(
+            `No.${number}の位置を保存しました`
+          );
+        })
+        .withFailureHandler(error => {
+          linkElement.classList.remove(
+            'saving'
+          );
+
+          status.textContent =
+            '位置の保存に失敗しました: ' +
+            getErrorMessage(error);
+        })
+        .saveLastReadId(id);
+    }
+
+    /**
+     * 保存したニュースIDの行へ移動する
+     */
+    function moveToLastReadPosition() {
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      if (!currentLastReadId) {
+        status.textContent =
+          '保存された既読位置がありません';
+
+        return;
+      }
+
+      const targetRow =
+        findNewsRowById(
+          currentLastReadId
+        );
+
+      if (!targetRow) {
+        currentLastReadId = null;
+
+        const moveToLastReadButton =
+          document.getElementById(
+            'moveToLastReadButton'
+          );
+
+        moveToLastReadButton.disabled =
+          true;
+
+        status.textContent =
+          '保存された記事が現在の一覧にありません';
+
+        return;
+      }
+
+      targetRow.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'nearest'
+      });
+
+      const number =
+        targetRow.dataset.number ?? '';
+
+      showTemporaryStatus(
+        number
+          ? `No.${number}の位置へ移動しました`
+          : '既読位置へ移動しました'
+      );
+    }
+
+    /**
+     * ニュースIDに一致する行を探す
+     */
+    function findNewsRowById(newsId) {
+      const id =
+        String(newsId ?? '').trim();
+
+      if (id === '') {
+        return null;
+      }
+
+      const rows =
+        document.querySelectorAll(
+          '.news-table tbody tr'
+        );
+
+      for (const row of rows) {
+        if (
+          String(
+            row.dataset.newsId ?? ''
+          ) === id
+        ) {
+          return row;
+        }
+      }
+
+      return null;
+    }
+
+    /**
+     * 見出しセルを作る
+     */
+    function createTitleCell(
+      title,
+      url,
+      rowElement
+    ) {
+      const td =
+        document.createElement('td');
+
+      td.className = 'col-title';
+
+      if (!url) {
+        td.textContent = title;
+        return td;
+      }
+
+      const link =
+        document.createElement('a');
+
+      link.className = 'news-url';
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = title;
+      link.title = url;
+
+      /*
+       * 見出しをクリックした行だけ
+       * 薄いオレンジ色にする。
+       *
+       * スクリプトプロパティには保存しない。
+       */
+      link.addEventListener(
+        'click',
+        () => {
+          document
+            .querySelectorAll(
+              '.news-table tbody tr.opened-row'
+            )
+            .forEach(row => {
+              row.classList.remove(
+                'opened-row'
+              );
+            });
+
+          rowElement.classList.add(
+            'opened-row'
+          );
+        }
+      );
+
+      td.appendChild(link);
+
+      return td;
+    }
+
+    /**
+     * コピー用ニュース文字列を作る
+     *
+     * URL・ID・連番は含めない。
+     */
+    function createNewsCopyText() {
+      return currentNewsList
+        .map(news => {
+          return [
+            news.time ?? '',
+            news.source ?? '',
+            news.title ?? ''
+          ].join('\n');
+        })
+        .join('\n\n');
+    }
+
+    /**
+     * AIプロンプトとニュース一覧をコピーする
+     *
+     * コピー成功後に、
+     * 表示中ニュースのIDを使って既読にする。
+     */
+    async function copyAllText() {
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      const copyButton =
+        document.getElementById(
+          'copyButton'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      const promptText =
+        aiPrompt.value.trim();
+
+      const newsText =
+        createNewsCopyText();
+
+      const copyParts = [];
+
+      if (promptText !== '') {
+        copyParts.push(promptText);
+      }
+
+      if (newsText !== '') {
+        copyParts.push(newsText);
+      }
+
+      const copyText =
+        copyParts.join('\n\n');
+
+      if (!copyText) {
+        status.textContent =
+          'コピーする内容がありません';
+
+        return;
+      }
+
+      copyButton.disabled = true;
+
+      /*
+       * まずクリップボードへコピーする。
+       *
+       * コピーに失敗した場合は、
+       * 既読更新を実行しない。
+       */
+      try {
+        await navigator.clipboard.writeText(
+          copyText
+        );
+
+      } catch (error) {
+        try {
+          fallbackCopy(copyText);
+
+        } catch (fallbackError) {
+          copyButton.disabled = false;
+
+          status.textContent =
+            'コピーに失敗しました';
+
+          return;
+        }
+      }
+
+      /*
+       * コピー成功後に、
+       * 現在表示中のニュースIDをGASへ渡す。
+       */
+      const ids = [
+        ...new Set(
+          currentNewsList
+            .map(news => {
+              return String(
+                news.id ?? ''
+              ).trim();
+            })
+            .filter(id => id !== '')
+        )
+      ];
+
+      if (ids.length === 0) {
+        copyButton.disabled = false;
+
+        status.textContent =
+          'コピーは完了しましたが、' +
+          '既読更新対象のIDがありません';
+
+        return;
+      }
+
+      status.textContent =
+        'コピーしました。既読更新中です...';
+
+      google.script.run
+        .withSuccessHandler(result => {
+          copyButton.disabled = false;
+
+          const updatedCount =
+            Number(
+              result?.updatedCount ?? 0
+            );
+
+          const alreadyReadCount =
+            Number(
+              result?.alreadyReadCount ?? 0
+            );
+
+          const notFoundCount =
+            Number(
+              result?.notFoundCount ?? 0
+            );
+
+          let message =
+            `コピーし、${updatedCount}件を既読にしました`;
+
+          if (alreadyReadCount > 0) {
+            message +=
+              `（既読済み${alreadyReadCount}件）`;
+          }
+
+          if (notFoundCount > 0) {
+            message +=
+              `（未検出${notFoundCount}件）`;
+          }
+
+          showTemporaryStatus(message);
+        })
+        .withFailureHandler(error => {
+          copyButton.disabled = false;
+
+          status.textContent =
+            'コピーは完了しましたが、' +
+            '既読更新に失敗しました: ' +
+            getErrorMessage(error);
+        })
+        .markDisplayedNewsAsRead(ids);
+    }
+
+    /**
+     * AIプロンプトを
+     * スクリプトプロパティへ保存する
+     */
+    function saveAiPrompt() {
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      const savePromptButton =
+        document.getElementById(
+          'savePromptButton'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      const promptText =
+        aiPrompt.value.trim();
+
+      if (!promptText) {
+        status.textContent =
+          'AIプロンプトが空白です';
+
+        return;
+      }
+
+      savePromptButton.disabled = true;
+
+      status.textContent =
+        '保存中です...';
+
+      google.script.run
+        .withSuccessHandler(() => {
+          savePromptButton.disabled =
+            false;
+
+          showTemporaryStatus(
+            'AIプロンプトを保存しました'
+          );
+        })
+        .withFailureHandler(error => {
+          savePromptButton.disabled =
+            false;
+
+          status.textContent =
+            '保存に失敗しました: ' +
+            getErrorMessage(error);
+        })
+        .saveAiPrompt(promptText);
+    }
+
+    /**
+     * 読み込みエラー表示
+     */
+    function showLoadError(error) {
+      const copyButton =
+        document.getElementById(
+          'copyButton'
+        );
+
+      const savePromptButton =
+        document.getElementById(
+          'savePromptButton'
+        );
+
+      const moveToLastReadButton =
+        document.getElementById(
+          'moveToLastReadButton'
+        );
+
+      const reloadButton =
+        document.getElementById(
+          'reloadButton'
+        );
+
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      const newsOutput =
+        document.getElementById(
+          'newsOutput'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      currentNewsList = [];
+      currentLastReadId = null;
+
+      copyButton.disabled = true;
+      savePromptButton.disabled = true;
+      moveToLastReadButton.disabled = true;
+      reloadButton.disabled = false;
+      aiPrompt.disabled = true;
+
+      newsOutput.className =
+        'news-output';
+
+      newsOutput.innerHTML = '';
+
+      const errorArea =
+        document.createElement('div');
+
+      errorArea.className =
+        'message-area error';
+
+      errorArea.textContent =
+        '読み込みに失敗しました。\n' +
+        getErrorMessage(error);
+
+      newsOutput.appendChild(errorArea);
+
+      status.textContent = 'エラー';
+    }
+
+    /**
+     * Clipboard APIが使えない場合の
+     * コピー処理
+     */
+    function fallbackCopy(text) {
+      const textarea =
+        document.createElement(
+          'textarea'
+        );
+
+      textarea.value = text;
+
+      textarea.style.position =
+        'fixed';
+
+      textarea.style.left =
+        '-9999px';
+
+      textarea.style.top = '0';
+
+      document.body.appendChild(
+        textarea
+      );
+
+      textarea.focus();
+      textarea.select();
+
+      const succeeded =
+        document.execCommand('copy');
+
+      document.body.removeChild(
+        textarea
+      );
+
+      if (!succeeded) {
+        throw new Error(
+          'コピーに失敗しました'
+        );
+      }
+    }
+
+    /**
+     * 一時的なステータス表示
+     */
+    function showTemporaryStatus(
+      message
+    ) {
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      status.textContent = message;
+
+      window.setTimeout(() => {
+        status.textContent =
+          `${currentNewsList.length}件`;
+      }, 2500);
+    }
+
+    /**
+     * GAS側エラーメッセージを取得する
+     */
+    function getErrorMessage(error) {
+      if (!error) {
+        return '不明なエラー';
+      }
+
+      if (
+        typeof error === 'string'
+      ) {
+        return error;
+      }
+
+      if (error.message) {
+        return error.message;
+      }
+
+      return String(error);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,421 @@
+/* =========================================
+   WBレポート全体
+   ========================================= */
+
+.market-report {
+  clear: both;
+  width: 100%;
+}
+
+
+/* =========================================
+   大見出し
+   例:
+   世界の株価リアルタイム
+   国債利回り
+   人気テーマ
+   ========================================= */
+
+/* =========================================
+   大見出し＋更新日時
+   ========================================= */
+
+.market-report .report-title-row {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+
+  float: none !important;
+
+  width: 100% !important;
+  max-width: 100%;
+  min-width: 0;
+
+  clear: both !important;
+
+  box-sizing: border-box;
+
+  gap: 20px;
+
+  margin-top: 36px;
+  margin-bottom: 14px;
+
+  background: #f4f5f6;
+}
+
+/* =========================================
+   大見出し本体
+   ========================================= */
+
+.market-report .report-title-row .report-title {
+  flex: 1 1 auto;
+  min-width: 0;
+
+  margin: 0 !important;
+
+  padding: 14px 20px !important;
+
+  /*
+   * Cocoon側のh2背景を消す
+   * 背景は親のreport-title-rowに任せる
+   */
+  background: transparent !important;
+
+  font-size: 20px;
+  line-height: 1.45;
+  font-weight: 700;
+
+  /*
+   * 「世界の株価」が
+   * 1文字ずつ縦に折れないようにする
+   */
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+
+/* =========================================
+   更新日時
+   ========================================= */
+
+.market-report .report-title-datetime {
+  flex: 0 0 auto;
+
+  margin-left: auto;
+
+  padding: 14px 20px 14px 0;
+
+  font-size: 14px !important;
+  line-height: 1.65 !important;
+  font-weight: 400 !important;
+
+  white-space: nowrap;
+
+  /*
+   * 親の灰色背景をそのまま使う
+   */
+  background: transparent !important;
+}
+
+/* =========================================
+   小見出し
+   例:
+   主要株価指数
+   株式市場　売買高・売買代金
+   日経平均想定値
+
+   h2より小さく、
+   表文字より大きくする。
+   ========================================= */
+
+.market-report h3 {
+  margin-top: 22px;
+  margin-bottom: 10px;
+
+  font-size: 18px;
+  line-height: 1.5;
+  font-weight: 700;
+}
+
+
+/* =========================================
+   通常テキスト
+
+   ・データ処理日時
+   ・※注記
+   ・表下の説明
+   ・決算速報 分類サマリ
+   ・大量保有速報 区分サマリ
+   など
+
+   表内と同じ14px。
+   ========================================= */
+
+.market-report .report-text {
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+/* =========================================
+   定点観測備考マスタ
+   ========================================= */
+
+.market-report .report-block-note {
+  margin-top: 12px;
+  margin-bottom: 0;
+
+  font-size: 14px;
+  line-height: 1.65;
+
+  /*
+   * マスタ内の改行・空行・先頭スペースを
+   * そのまま表示する。
+   */
+  white-space: pre-wrap;
+}
+
+/* =========================================
+   表ラッパー
+   ========================================= */
+
+.market-report .report-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+
+  margin: 12px 0 28px;
+}
+
+
+/* =========================================
+   表
+   ========================================= */
+
+.market-report .report-table {
+  width: 100%;
+
+  border-collapse: collapse;
+
+  white-space: nowrap;
+
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+
+.market-report .report-table th,
+.market-report .report-table td {
+  border: 1px solid #ccc;
+
+  padding: 6px 10px;
+
+  vertical-align: top;
+
+  font-size: 14px;
+}
+
+/* =========================================
+   表の位置揃え
+   ========================================= */
+
+/*
+ * 原則
+ *
+ * タイトル → 中央
+ * 値       → 右
+ */
+.market-report .report-table th {
+  text-align: center;
+}
+
+.market-report .report-table td {
+  text-align: right;
+}
+
+
+/*
+ * 列ごとの例外
+ */
+.market-report .report-table
+.report-align-left {
+  text-align: left !important;
+}
+
+.market-report .report-table
+.report-align-center {
+  text-align: center !important;
+}
+
+.market-report .report-table
+.report-align-right {
+  text-align: right !important;
+}
+
+.market-report .report-table th {
+  font-weight: bold;
+}
+
+
+/* =========================================
+   日経平均想定値
+
+   PER表・PBR表の間隔を狭くする。
+   ========================================= */
+
+.market-report .report-table-wrap-compact {
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+
+
+/*
+ * 日経平均想定値で
+ * compact表が連続した場合はさらに詰める。
+ */
+.market-report .report-table-wrap-compact
++ .report-table-wrap-compact {
+  margin-top: 4px;
+}
+
+/* =========================================
+   Cocoon自動目次対策
+
+   Cocoonは最初のh2直前へ目次を挿入するため、
+   最初の.report-title-rowの中に
+   .tocが入り込む。
+
+   その場合だけ、
+   目次を1行目、
+   タイトル＋日時を2行目にする。
+   ========================================= */
+
+.market-report .report-title-row:has(> .toc) {
+  flex-wrap: wrap !important;
+
+  /*
+   * 目次まで灰色背景にしないため
+   * 最初の行だけ親背景を透明化する。
+   */
+  background: transparent !important;
+
+  gap: 0;
+
+  margin-top: 0;
+}
+
+
+/* 目次は1行すべて使用 */
+.market-report .report-title-row > .toc {
+  flex: 0 0 100% !important;
+
+  width: 100% !important;
+  max-width: 100% !important;
+
+  float: none !important;
+  clear: both !important;
+
+  box-sizing: border-box;
+
+  margin-bottom: 20px;
+}
+
+
+/*
+ * 最初のタイトル
+ *
+ * 残り幅を使用して日時と横並び。
+ */
+.market-report .report-title-row:has(> .toc) > .report-title {
+  flex: 1 1 auto !important;
+
+  width: auto !important;
+  min-width: 0;
+
+  white-space: nowrap !important;
+
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+
+  /*
+   * 親を透明化したので、
+   * タイトル自身に灰色背景を戻す。
+   */
+  background: #f4f5f6 !important;
+}
+
+
+/*
+ * 最初の更新日時
+ *
+ * タイトルと同じ灰色背景。
+ */
+.market-report .report-title-row:has(> .toc) > .report-title-datetime {
+  flex: 0 0 auto;
+
+  background: #f4f5f6 !important;
+
+  /*
+   * h2と高さを揃える
+   */
+  align-self: stretch;
+
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 700px) {
+
+  .market-report .report-title-row {
+    flex-wrap: wrap;
+  }
+
+  .market-report .report-title-row .report-title {
+    width: 100%;
+  }
+
+  .market-report .report-title-datetime {
+    width: 100%;
+
+    margin-left: 0;
+
+    padding:
+      0 20px
+      14px 20px;
+  }
+}
+
+/* =========================================
+   WordPress手書き部分の表
+
+   「その他追記事項」
+   「経済指標」
+   などのWordPress標準テーブルを、
+   WBレポート表と同じ文字サイズに統一。
+   ========================================= */
+
+.entry-content .wp-block-table table,
+.entry-content .wp-block-table th,
+.entry-content .wp-block-table td {
+  font-size: 14px !important;
+  line-height: 1.5;
+}
+
+/* =========================================
+   各国の経済状況雑感 本文
+
+   「米国」「欧州」「中国」などの
+   h2見出し直後の本文を、
+   表と同じ14pxに統一。
+   ========================================= */
+
+.entry-content h2.wp-block-heading + p.wp-block-paragraph {
+  font-size: 14px !important;
+  line-height: 1.5;
+}
+/* =========================================
+   WordPress黒背景見出し
+   ・レポート
+   ・その他観測項目
+   ・経済指標
+   ・各国の経済状況雑感
+   など
+
+   WBレポートの大見出しと同じサイズ
+   ========================================= */
+
+.entry-content p.has-white-color.has-black-background-color.has-text-color.has-background.wp-block-paragraph {
+  font-size: 20px !important;
+  line-height: 1.45 !important;
+  font-weight: 700 !important;
+}
+/* =========================================
+   各国の経済状況雑感
+   「米国」「欧州」「中国」などの見出し
+   ========================================= */
+
+.entry-content h2.wp-block-heading {
+  font-size: 20px !important;
+  line-height: 1.45 !important;
+  font-weight: 700 !important;
+
+  padding: 14px 20px !important;
+}
