@@ -1622,13 +1622,40 @@ function upload_outputs_and_cleanup(string $jobName, string $isoDate, string $cs
 
   // CSV -> Google Sheets（拡張子なし名）
   $sheetName = "{$jobName}_{$isoDate}";
-  $createdSheet = upload_csv_as_google_sheet_with_retry_($drive, $csvPath, $sheetName, $uploadFolderId);
-  echo "Created Google Sheet: {$createdSheet->getName()} ({$createdSheet->getId()})\n";
+  $uploadedSheet =
+    upload_csv_as_google_sheet_with_retry_(
+      $drive,
+      $csvPath,
+      $sheetName,
+      $uploadFolderId
+    );
+
+  echo
+    "Uploaded/updated Google Sheet: " .
+    $uploadedSheet->getName() .
+    " (" .
+    $uploadedSheet->getId() .
+    ")\n";
 
   // TXT（そのまま）
-  $txtName = "{$jobName}_メッセージ_{$isoDate}.txt";
-  $createdTxt = upload_file_with_retry_($drive, $txtPath, $txtName, 'text/plain', $uploadFolderId);
-  echo "Uploaded TXT: {$createdTxt->getName()} ({$createdTxt->getId()})\n";
+  $txtName =
+    "{$jobName}_メッセージ_{$isoDate}.txt";
+
+  $uploadedTxt =
+    upload_file_with_retry_(
+      $drive,
+      $txtPath,
+      $txtName,
+      'text/plain',
+      $uploadFolderId
+    );
+
+  echo
+    "Uploaded/updated TXT: " .
+    $uploadedTxt->getName() .
+    " (" .
+    $uploadedTxt->getId() .
+    ")\n";
 
   // ローカル削除
   @unlink($csvPath);
@@ -2227,21 +2254,126 @@ function upload_csv_as_google_sheet_(
   string $folderId
 ): Google\Service\Drive\DriveFile {
 
-  $fileMeta = new Google\Service\Drive\DriveFile([
-    'name' => $sheetName,
-    'parents' => [$folderId],
-    'mimeType' => 'application/vnd.google-apps.spreadsheet',
-  ]);
+  $content =
+    file_get_contents(
+      $localCsvPath
+    );
 
-  $content = file_get_contents($localCsvPath);
-  if ($content === false) throw new RuntimeException("CSV read failed: {$localCsvPath}");
+  if ($content === false) {
+    throw new RuntimeException(
+      "CSV read failed: {$localCsvPath}"
+    );
+  }
 
-  return $drive->files->create($fileMeta, [
-    'data' => $content,
-    'mimeType' => 'text/csv',
-    'uploadType' => 'multipart',
-    'fields' => 'id,name,mimeType,parents',
-  ]);
+  /*
+   * 同一フォルダ内の同名ファイルを検索する。
+   */
+  $existing =
+    find_drive_file_by_name_in_folder_(
+      $drive,
+      $folderId,
+      $sheetName
+    );
+
+  // -------------------------------------------------------
+  // UPDATE
+  // -------------------------------------------------------
+
+  if ($existing !== null) {
+    $existingMimeType =
+      (string)$existing->getMimeType();
+
+    /*
+     * 同名ファイルがGoogle Spreadsheetではない場合は、
+     * 意図しないファイルを上書きしないため異常終了する。
+     */
+    if (
+      $existingMimeType !==
+      'application/vnd.google-apps.spreadsheet'
+    ) {
+      throw new RuntimeException(
+        "Google Driveの同名ファイルが" .
+        "Google Spreadsheetではありません: " .
+        "{$sheetName} mimeType={$existingMimeType}"
+      );
+    }
+
+    echo
+      "[UPLOAD][CSV->SHEET][UPDATE] " .
+      "{$sheetName} " .
+      "fileId=" .
+      $existing->getId() .
+      "\n";
+
+    $fileMeta =
+      new Google\Service\Drive\DriveFile(
+        array(
+          'name' =>
+            $sheetName,
+        )
+      );
+
+    return
+      $drive->files->update(
+        $existing->getId(),
+        $fileMeta,
+        array(
+          'data' =>
+            $content,
+
+          'mimeType' =>
+            'text/csv',
+
+          'uploadType' =>
+            'multipart',
+
+          'fields' =>
+            'id,name,mimeType,parents',
+        )
+      );
+  }
+
+  // -------------------------------------------------------
+  // CREATE
+  // -------------------------------------------------------
+
+  echo
+    "[UPLOAD][CSV->SHEET][CREATE] " .
+    "{$sheetName}\n";
+
+  $fileMeta =
+    new Google\Service\Drive\DriveFile(
+      array(
+        'name' =>
+          $sheetName,
+
+        'parents' =>
+          array(
+            $folderId
+          ),
+
+        'mimeType' =>
+          'application/vnd.google-apps.spreadsheet',
+      )
+    );
+
+  return
+    $drive->files->create(
+      $fileMeta,
+      array(
+        'data' =>
+          $content,
+
+        'mimeType' =>
+          'text/csv',
+
+        'uploadType' =>
+          'multipart',
+
+        'fields' =>
+          'id,name,mimeType,parents',
+      )
+    );
 }
 
 function upload_file_(
@@ -2252,20 +2384,219 @@ function upload_file_(
   string $folderId
 ): Google\Service\Drive\DriveFile {
 
-  $fileMeta = new Google\Service\Drive\DriveFile([
-    'name' => $driveName,
-    'parents' => [$folderId],
-  ]);
+  $content =
+    file_get_contents(
+      $localPath
+    );
 
-  $content = file_get_contents($localPath);
-  if ($content === false) throw new RuntimeException("file read failed: {$localPath}");
+  if ($content === false) {
+    throw new RuntimeException(
+      "file read failed: {$localPath}"
+    );
+  }
 
-  return $drive->files->create($fileMeta, [
-    'data' => $content,
-    'mimeType' => $mimeType,
-    'uploadType' => 'multipart',
-    'fields' => 'id,name,mimeType,parents',
-  ]);
+  /*
+   * 同一フォルダ内の同名ファイルを検索する。
+   */
+  $existing =
+    find_drive_file_by_name_in_folder_(
+      $drive,
+      $folderId,
+      $driveName
+    );
+
+  // -------------------------------------------------------
+  // UPDATE
+  // -------------------------------------------------------
+
+  if ($existing !== null) {
+    $existingMimeType =
+      (string)$existing->getMimeType();
+
+    /*
+     * Google Docs / Sheets等を、
+     * 通常ファイルのアップロード処理で誤って更新しない。
+     */
+    if (
+      strpos(
+        $existingMimeType,
+        'application/vnd.google-apps.'
+      ) === 0
+    ) {
+      throw new RuntimeException(
+        "Google Driveの同名ファイルが" .
+        "Google Workspaceファイルです: " .
+        "{$driveName} mimeType={$existingMimeType}"
+      );
+    }
+
+    echo
+      "[UPLOAD][FILE][UPDATE] " .
+      "{$driveName} " .
+      "fileId=" .
+      $existing->getId() .
+      "\n";
+
+    $fileMeta =
+      new Google\Service\Drive\DriveFile(
+        array(
+          'name' =>
+            $driveName,
+        )
+      );
+
+    return
+      $drive->files->update(
+        $existing->getId(),
+        $fileMeta,
+        array(
+          'data' =>
+            $content,
+
+          'mimeType' =>
+            $mimeType,
+
+          'uploadType' =>
+            'multipart',
+
+          'fields' =>
+            'id,name,mimeType,parents',
+        )
+      );
+  }
+
+  // -------------------------------------------------------
+  // CREATE
+  // -------------------------------------------------------
+
+  echo
+    "[UPLOAD][FILE][CREATE] " .
+    "{$driveName}\n";
+
+  $fileMeta =
+    new Google\Service\Drive\DriveFile(
+      array(
+        'name' =>
+          $driveName,
+
+        'parents' =>
+          array(
+            $folderId
+          ),
+      )
+    );
+
+  return
+    $drive->files->create(
+      $fileMeta,
+      array(
+        'data' =>
+          $content,
+
+        'mimeType' =>
+          $mimeType,
+
+        'uploadType' =>
+          'multipart',
+
+        'fields' =>
+          'id,name,mimeType,parents',
+      )
+    );
+}
+
+/**
+ * 指定フォルダ内から同名ファイルを検索する。
+ *
+ * 0件:
+ *   nullを返す。
+ *
+ * 1件:
+ *   DriveFileを返す。
+ *
+ * 2件以上:
+ *   どのファイルを更新すべきか特定できないため異常終了する。
+ */
+function find_drive_file_by_name_in_folder_(
+  Google\Service\Drive $drive,
+  string $folderId,
+  string $fileName
+): ?Google\Service\Drive\DriveFile {
+
+  $folderId =
+    trim(
+      $folderId
+    );
+
+  $fileName =
+    trim(
+      $fileName
+    );
+
+  if ($folderId === '') {
+    throw new InvalidArgumentException(
+      'Drive folderId is empty.'
+    );
+  }
+
+  if ($fileName === '') {
+    throw new InvalidArgumentException(
+      'Drive fileName is empty.'
+    );
+  }
+
+  /*
+   * Drive検索式で使用するシングルクォートをエスケープする。
+   */
+  $escapedName =
+    str_replace(
+      "'",
+      "\\'",
+      $fileName
+    );
+
+  $q =
+    "name = '{$escapedName}'" .
+    " and '{$folderId}' in parents" .
+    " and trashed = false";
+
+  $res =
+    $drive->files->listFiles(
+      array(
+        'q' =>
+          $q,
+
+        'fields' =>
+          'files(id,name,mimeType,parents)',
+
+        /*
+         * 2件存在するか判定できれば十分。
+         */
+        'pageSize' =>
+          2,
+      )
+    );
+
+  $files =
+    $res->getFiles();
+
+  if (
+    !$files ||
+    count($files) === 0
+  ) {
+    return null;
+  }
+
+  if (count($files) > 1) {
+    throw new RuntimeException(
+      "Google Driveに同名ファイルが複数存在します: " .
+      "{$fileName} count=" .
+      count($files)
+    );
+  }
+
+  return
+    $files[0];
 }
 
 function upload_csv_as_google_sheet_with_retry_(
@@ -2276,10 +2607,11 @@ function upload_csv_as_google_sheet_with_retry_(
 ): Google\Service\Drive\DriveFile {
 
   $lastErr = null;
+  $lastRetryable = false;
 
   for ($try = 1; $try <= UPLOAD_RETRY_MAX; $try++) {
     try {
-      echo "[UPLOAD][CSV->SHEET] try {$try}/" . UPLOAD_RETRY_MAX . "\n";
+      echo "[UPLOAD][CSV->SHEET][UPSERT] try {$try}/" . UPLOAD_RETRY_MAX . "\n";
       return upload_csv_as_google_sheet_($drive, $localCsvPath, $sheetName, $folderId);
 
     } catch (Google\Service\Exception $e) {
@@ -2287,6 +2619,7 @@ function upload_csv_as_google_sheet_with_retry_(
       $code = (int)$e->getCode();
       $msg  = $e->getMessage();
       $retryable = ($code === 503 || $code === 429 || stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
         fwrite(STDERR, "[UPLOAD][CSV][retry {$try}/" . UPLOAD_RETRY_MAX . "] retryable (code={$code}). sleep " . UPLOAD_RETRY_SLEEP . "s\n");
@@ -2299,6 +2632,7 @@ function upload_csv_as_google_sheet_with_retry_(
       $lastErr = $e;
       $msg = $e->getMessage();
       $retryable = (stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
         fwrite(STDERR, "[UPLOAD][CSV][retry {$try}/" . UPLOAD_RETRY_MAX . "] timeout-like. sleep " . UPLOAD_RETRY_SLEEP . "s\n");
@@ -2309,8 +2643,30 @@ function upload_csv_as_google_sheet_with_retry_(
     }
   }
 
-  fwrite(STDERR, "Google側（Drive/Sheets API）の一時的なバックエンド障害／過負荷のため終了\n");
-  if ($lastErr) fwrite(STDERR, "[UPLOAD][CSV][FAILED] " . $lastErr->getMessage() . "\n");
+  if ($lastRetryable) {
+    fwrite(
+      STDERR,
+      "[UPLOAD][CSV][FAILED][RETRYABLE] " .
+      "Google側の一時的な障害またはタイムアウトのため、" .
+      "最大リトライ回数に到達しました。\n"
+    );
+  } else {
+    fwrite(
+      STDERR,
+      "[UPLOAD][CSV][FAILED][FATAL] " .
+      "再試行対象外のエラーのため終了します。\n"
+    );
+  }
+
+  if ($lastErr) {
+    fwrite(
+      STDERR,
+      "[UPLOAD][CSV][ERROR] " .
+      $lastErr->getMessage() .
+      "\n"
+    );
+  }
+
   exit(1);
 }
 
@@ -2323,10 +2679,11 @@ function upload_file_with_retry_(
 ): Google\Service\Drive\DriveFile {
 
   $lastErr = null;
+  $lastRetryable = false;
 
   for ($try = 1; $try <= UPLOAD_RETRY_MAX; $try++) {
     try {
-      echo "[UPLOAD][FILE] try {$try}/" . UPLOAD_RETRY_MAX . "\n";
+      echo "[UPLOAD][FILE][UPSERT] try {$try}/" . UPLOAD_RETRY_MAX . "\n";
       return upload_file_($drive, $localPath, $driveName, $mimeType, $folderId);
 
     } catch (Google\Service\Exception $e) {
@@ -2334,6 +2691,7 @@ function upload_file_with_retry_(
       $code = (int)$e->getCode();
       $msg  = $e->getMessage();
       $retryable = ($code === 503 || $code === 429 || stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
         fwrite(STDERR, "[UPLOAD][FILE][retry {$try}/" . UPLOAD_RETRY_MAX . "] retryable (code={$code}). sleep " . UPLOAD_RETRY_SLEEP . "s\n");
@@ -2346,6 +2704,7 @@ function upload_file_with_retry_(
       $lastErr = $e;
       $msg = $e->getMessage();
       $retryable = (stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
         fwrite(STDERR, "[UPLOAD][FILE][retry {$try}/" . UPLOAD_RETRY_MAX . "] timeout-like. sleep " . UPLOAD_RETRY_SLEEP . "s\n");
@@ -2356,8 +2715,30 @@ function upload_file_with_retry_(
     }
   }
 
-  fwrite(STDERR, "Google側（Drive/Sheets API）の一時的なバックエンド障害／過負荷のため終了\n");
-  if ($lastErr) fwrite(STDERR, "[UPLOAD][FILE][FAILED] " . $lastErr->getMessage() . "\n");
+  if ($lastRetryable) {
+    fwrite(
+      STDERR,
+      "[UPLOAD][FILE][FAILED][RETRYABLE] " .
+      "Google側の一時的な障害またはタイムアウトのため、" .
+      "最大リトライ回数に到達しました。\n"
+    );
+  } else {
+    fwrite(
+      STDERR,
+      "[UPLOAD][FILE][FAILED][FATAL] " .
+      "再試行対象外のエラーのため終了します。\n"
+    );
+  }
+
+  if ($lastErr) {
+    fwrite(
+      STDERR,
+      "[UPLOAD][FILE][ERROR] " .
+      $lastErr->getMessage() .
+      "\n"
+    );
+  }
+
   exit(1);
 }
 /**
