@@ -282,6 +282,14 @@ function format_new_high_low_count_(
       trim((string)$value)
     );
 
+  /*
+   * 取得元では0件の場合に「-」と表示されるため、
+   * 0として扱う。
+   */
+  if ($raw === '-') {
+    $raw = '0';
+  }
+
   if (
     $raw === '' ||
     !preg_match('/^\d+$/', $raw)
