@@ -1077,7 +1077,7 @@ function boj_operation_offer_results_parse_date_(
 /**
  * 金額系の値を表示用へ整形する。
  *
- * 正数は+、
+ * 正数は符号なし、
  * 負数は-、
  * 0は符号なし。
  *
@@ -1120,7 +1120,6 @@ function format_boj_operation_offer_results_amount_(
 
   if ($intValue > 0) {
     return
-      '+' .
       number_format(
         $intValue
       );
@@ -1143,7 +1142,7 @@ function format_boj_operation_offer_results_amount_(
 /**
  * レート系の値を小数点以下3桁へ整形する。
  *
- * 正数は+、
+ * 正数は符号なし、
  * 負数は-、
  * 0は符号なし。
  *
@@ -1165,7 +1164,6 @@ function format_boj_operation_offer_results_rate_(
 
   if ($number > 0) {
     return
-      '+' .
       number_format(
         $number,
         3,

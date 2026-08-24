@@ -157,44 +157,44 @@ function parse_margin_balance_profit_loss_html_($html) {
      * 数値検証および正規化。
      */
     $sellSharesFormatted =
-      format_margin_balance_integer_(
+      format_margin_balance_shares_(
         $sellShares,
-        '売り残枚数(千株)',
+        '売り残枚数',
         $i + 1
       );
 
     $sellAmountFormatted =
-      format_margin_balance_integer_(
+      format_margin_balance_amount_(
         $sellAmount,
-        '売り残金額(百万円)',
+        '売り残金額',
         $i + 1
       );
 
     $sellChangeFormatted =
       format_margin_balance_change_percent_(
         $sellChange,
-        '売り残前回比(％)',
+        '売り残前回比',
         $i + 1
       );
 
     $buySharesFormatted =
-      format_margin_balance_integer_(
+      format_margin_balance_shares_(
         $buyShares,
-        '買い残枚数(千株)',
+        '買い残枚数',
         $i + 1
       );
 
     $buyAmountFormatted =
-      format_margin_balance_integer_(
+      format_margin_balance_amount_(
         $buyAmount,
-        '買い残金額(百万円)',
+        '買い残金額',
         $i + 1
       );
 
     $buyChangeFormatted =
       format_margin_balance_change_percent_(
         $buyChange,
-        '買い残前回比(％)',
+        '買い残前回比',
         $i + 1
       );
 
@@ -203,7 +203,8 @@ function parse_margin_balance_profit_loss_html_($html) {
         $marginRatio,
         '信用倍率',
         $i + 1,
-        true
+        true,
+        false
       );
 
     /*
@@ -217,6 +218,7 @@ function parse_margin_balance_profit_loss_html_($html) {
         $profitLossRatio,
         '信用評価率',
         $i + 1,
+        true,
         true
       );
 
@@ -258,6 +260,172 @@ function parse_margin_balance_profit_loss_html_($html) {
 }
 
 /**
+ * 売り残・買い残の枚数を検証し、
+ * 千株単位から万株・億株形式へ変換する。
+ *
+ * 千株から万株への変換時は、
+ * 10で除算して端数を切り捨てる。
+ *
+ * 例:
+ *   483,812千株
+ *     → 48,381万株
+ *     → 4億8381万株
+ *
+ *   3,519,645千株
+ *     → 351,964万株
+ *     → 35億1964万株
+ */
+function format_margin_balance_shares_(
+  $value,
+  $fieldName,
+  $rowNo
+) {
+  $raw =
+    str_replace(
+      ',',
+      '',
+      trim((string)$value)
+    );
+
+  if (
+    $raw === '' ||
+    !preg_match('/^\d+$/', $raw)
+  ) {
+    throw new RuntimeException(
+      "信用残・評価損益の枚数形式が不正です: " .
+      "row={$rowNo}" .
+      " field={$fieldName}" .
+      " value={$value}"
+    );
+  }
+
+  /*
+   * 元データは千株単位。
+   *
+   * 10千株 = 1万株なので、
+   * 10で除算して端数切り捨て。
+   */
+  $manShares =
+    intdiv(
+      (int)$raw,
+      10
+    );
+
+  /*
+   * 1億株 = 10,000万株。
+   */
+  if ($manShares >= 10000) {
+    $okuShares =
+      intdiv(
+        $manShares,
+        10000
+      );
+
+    $remainManShares =
+      $manShares % 10000;
+
+    if ($remainManShares === 0) {
+      return
+        $okuShares .
+        '億株';
+    }
+
+    return
+      $okuShares .
+      '億' .
+      $remainManShares .
+      '万株';
+  }
+
+  return
+    $manShares .
+    '万株';
+}
+
+/**
+ * 売り残・買い残の金額を検証し、
+ * 百万円単位から億円・兆円形式へ変換する。
+ *
+ * 百万円から億円への変換時は、
+ * 100で除算して端数を切り捨てる。
+ *
+ * 例:
+ *   893,083百万円
+ *     → 8,930億円
+ *     → 8930億円
+ *
+ *   6,200,665百万円
+ *     → 62,006億円
+ *     → 6兆2006億円
+ */
+function format_margin_balance_amount_(
+  $value,
+  $fieldName,
+  $rowNo
+) {
+  $raw =
+    str_replace(
+      ',',
+      '',
+      trim((string)$value)
+    );
+
+  if (
+    $raw === '' ||
+    !preg_match('/^\d+$/', $raw)
+  ) {
+    throw new RuntimeException(
+      "信用残・評価損益の金額形式が不正です: " .
+      "row={$rowNo}" .
+      " field={$fieldName}" .
+      " value={$value}"
+    );
+  }
+
+  /*
+   * 元データは百万円単位。
+   *
+   * 100百万円 = 1億円なので、
+   * 100で除算して端数切り捨て。
+   */
+  $okuYen =
+    intdiv(
+      (int)$raw,
+      100
+    );
+
+  /*
+   * 1兆円 = 10,000億円。
+   */
+  if ($okuYen >= 10000) {
+    $choYen =
+      intdiv(
+        $okuYen,
+        10000
+      );
+
+    $remainOkuYen =
+      $okuYen % 10000;
+
+    if ($remainOkuYen === 0) {
+      return
+        $choYen .
+        '兆円';
+    }
+
+    return
+      $choYen .
+      '兆' .
+      $remainOkuYen .
+      '億円';
+  }
+
+  return
+    $okuYen .
+    '億円';
+}
+
+/**
  * 日付を検証する。
  *
  * @param string $value
@@ -291,47 +459,6 @@ function validate_margin_balance_date_(
       "row={$rowNo} value={$value}"
     );
   }
-}
-
-/**
- * 枚数・金額の整数値を検証し、
- * 3桁ごとのカンマ区切りへ正規化する。
- *
- * @param string $value
- * @param string $fieldName
- * @param int $rowNo
- * @return string
- */
-function format_margin_balance_integer_(
-  $value,
-  $fieldName,
-  $rowNo
-) {
-  $raw =
-    str_replace(
-      ',',
-      '',
-      trim((string)$value)
-    );
-
-  if (
-    $raw === '' ||
-    !preg_match('/^\d+$/', $raw)
-  ) {
-    throw new RuntimeException(
-      "信用残・評価損益の数値形式が不正です: " .
-      "row={$rowNo}" .
-      " field={$fieldName}" .
-      " value={$value}"
-    );
-  }
-
-  return number_format(
-    (float)$raw,
-    0,
-    '.',
-    ','
-  );
 }
 
 /**
@@ -421,7 +548,8 @@ function format_margin_balance_ratio_(
   $value,
   $fieldName,
   $rowNo,
-  $allowMissing
+  $allowMissing,
+  $appendPercent
 ) {
   $original =
     trim((string)$value);
@@ -469,16 +597,53 @@ function format_margin_balance_ratio_(
    *
    * 元値の100倍等は行わない。
    */
-  return
+  $formatted =
     number_format(
       $number,
       2,
       '.',
       ''
-    ) .
-    '%';
-}
+    );
 
+  if ($appendPercent) {
+    $formatted .= '%';
+  }
+
+  return $formatted;
+}
+/**
+ * 全角・半角を考慮して右寄せする。
+ */
+function pad_margin_balance_left_(
+  $value,
+  $width
+) {
+  if (!function_exists('mb_strwidth')) {
+    throw new RuntimeException(
+      "mb_strwidth()が使用できません。"
+    );
+  }
+
+  $text =
+    (string)$value;
+
+  $currentWidth =
+    mb_strwidth(
+      $text,
+      'UTF-8'
+    );
+
+  if ($currentWidth >= $width) {
+    return $text;
+  }
+
+  return
+    str_repeat(
+      ' ',
+      $width - $currentWidth
+    ) .
+    $text;
+}
 /**
  * 信用残・評価損益の抽出結果から
  * レポート本文を作成する。
@@ -510,14 +675,14 @@ function build_margin_balance_profit_loss_message_(
    */
   $lines[] =
     "日付" . "\t" .
-    "売り残枚数(千株)" . "\t" .
-    "売り残金額(百万円)" . "\t" .
-    "売り残前回比(％)" . "\t" .
-    "買い残枚数(千株)" . "\t" .
-    "買い残金額(百万円)" . "\t" .
-    "買い残前回比(％)" . "\t" .
     "信用倍率" . "\t" .
-    "信用評価率";
+    "信用評価率" . "\t" .
+    "売り残枚数" . "\t" .
+    "売り残金額" . "\t" .
+    "売り残前回比" . "\t" .
+    "買い残枚数" . "\t" .
+    "買い残金額" . "\t" .
+    "買い残前回比";
 
   foreach ($parsed['rows'] as $row) {
     /*
@@ -528,40 +693,32 @@ function build_margin_balance_profit_loss_message_(
       (string)$row['date'];
 
     /*
-     * 整数系:
-     * 999,999,999
-     * 最大11文字幅で右寄せ。
+     * 枚数・金額:
+     * 万株・億株、億円・兆円形式。
+     * 全角文字を考慮して14文字幅で右寄せ。
      */
     $sellShares =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['sell_shares'],
-        11,
-        ' ',
-        STR_PAD_LEFT
+        14
       );
 
     $sellAmount =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['sell_amount'],
-        11,
-        ' ',
-        STR_PAD_LEFT
+        14
       );
 
     $buyShares =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['buy_shares'],
-        11,
-        ' ',
-        STR_PAD_LEFT
+        14
       );
 
     $buyAmount =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['buy_amount'],
-        11,
-        ' ',
-        STR_PAD_LEFT
+        14
       );
 
     /*
@@ -570,55 +727,48 @@ function build_margin_balance_profit_loss_message_(
      * -999.00%まで考慮して8文字幅で右寄せ。
      */
     $sellChange =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['sell_change'],
-        8,
-        ' ',
-        STR_PAD_LEFT
+        8
       );
 
     $buyChange =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['buy_change'],
-        8,
-        ' ',
-        STR_PAD_LEFT
+        8
       );
 
     /*
      * 信用倍率・信用評価率:
-     * 999.00%を基本形式とし、
-     * 負数も考慮して8文字幅で右寄せ。
+     * 信用倍率は999.00、
+     * 信用評価率は999.00%を基本形式とし、
+     * 8文字幅で右寄せ。
      *
-     * 信用倍率または信用評価率が未公表の場合の "-"
+     * 未公表の場合の "-"
      * も同じ幅で右寄せする。
      */
     $marginRatio =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['margin_ratio'],
-        8,
-        ' ',
-        STR_PAD_LEFT
+        8
       );
 
     $profitLossRatio =
-      str_pad(
+      pad_margin_balance_left_(
         (string)$row['profit_loss_ratio'],
-        8,
-        ' ',
-        STR_PAD_LEFT
+        8
       );
 
     $lines[] =
       $date . "\t" .
+      $marginRatio . "\t" .
+      $profitLossRatio . "\t" .
       $sellShares . "\t" .
       $sellAmount . "\t" .
       $sellChange . "\t" .
       $buyShares . "\t" .
       $buyAmount . "\t" .
-      $buyChange . "\t" .
-      $marginRatio . "\t" .
-      $profitLossRatio;
+      $buyChange;
   }
 
   return implode("\n", $lines);

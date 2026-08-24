@@ -48,7 +48,7 @@
       /*
        * 残り幅を日付欄に割り当てる。
        *
-       * WEBレポート・統合レポートのボタン幅を固定し、
+       * WBコード・統合レポートのボタン幅を固定し、
        * 統合レポートの右端が下のボタン類の右端と
        * 揃うようにする。
        */
@@ -328,15 +328,6 @@
         onclick="createWbReport()"
       >
         WBコード
-      </button>
-      </button>
-
-      <button
-        type="button"
-        class="report-button"
-        onclick="createWebReport()"
-      >
-        WEBレポート
       </button>
 
       <button
@@ -685,46 +676,6 @@ function createWbReport() {
 
     .createWbReport(date);
 }
-/* ==================================================
- * WEBレポート
- * ================================================== */
-
-function createWebReport() {
-
-  const date =
-    getTargetDate();
-
-  if (!date) {
-    return;
-  }
-
-  setLoading(true);
-
-  google.script.run
-
-    .withSuccessHandler(
-      function(result) {
-
-        setLoading(false);
-
-        downloadText(
-          result.fileName,
-          result.text
-        );
-
-        showStatus(
-          'WEBレポートを作成しました。'
-        );
-      }
-    )
-
-    .withFailureHandler(
-      handleError
-    )
-
-    .createWebReport(date);
-}
-
 
 /* ==================================================
  * 統合レポート

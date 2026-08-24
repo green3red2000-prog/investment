@@ -1,28 +1,11 @@
 <?php
 /**
- * 市況関連データ抽出：騰落レシオ
- *
- * market_data_extract.php から読み込まれ、
- * 騰落レシオのHTML解析およびレポート生成を行う。
- *
- * 依存関数:
- *   normalize_text_()
- *   load_xpath_()
- */
-
-// =======================================================
-// 騰落レシオ
-// =======================================================
-
-/**
  * 騰落レシオHTMLを解析する。
  *
- * 「騰落レシオ 90営業日」の表から、
+ * 騰落レシオの表から、
  * 最新5営業日分について以下を取得する。
  *
  *   日付
- *   プライム値上がり銘柄数
- *   プライム値下がり銘柄数
  *   騰落レシオ(25日)
  *   騰落レシオ(15日)
  *   騰落レシオ(10日)
@@ -32,7 +15,7 @@ function parse_advance_decline_ratio_html_($html) {
   $xpath = load_xpath_($html);
 
   /*
-   * 「騰落レシオ 90営業日」の表。
+   * 騰落レシオの表。
    */
   $tableNodes = $xpath->query(
     "//table[@id='datatbl']"
@@ -40,7 +23,7 @@ function parse_advance_decline_ratio_html_($html) {
 
   if (!$tableNodes || $tableNodes->length === 0) {
     throw new RuntimeException(
-      "騰落レシオ90営業日のテーブルが見つかりません。"
+      "騰落レシオのテーブルが見つかりません。"
     );
   }
 
@@ -59,13 +42,13 @@ function parse_advance_decline_ratio_html_($html) {
 
   if (!$rowNodes || $rowNodes->length === 0) {
     throw new RuntimeException(
-      "騰落レシオ90営業日のデータ行が見つかりません。"
+      "騰落レシオのデータ行が見つかりません。"
     );
   }
 
   if ($rowNodes->length < 5) {
     throw new RuntimeException(
-      "騰落レシオ90営業日の取得件数が5件未満です: " .
+      "騰落レシオの取得件数が5件未満です: " .
       $rowNodes->length
     );
   }
@@ -86,7 +69,7 @@ function parse_advance_decline_ratio_html_($html) {
 
     if (!$cells || $cells->length !== 10) {
       throw new RuntimeException(
-        "騰落レシオ90営業日の列数が10列ではありません: " .
+        "騰落レシオの列数が10列ではありません: " .
         "row=" . ($i + 1) .
         " columns=" . ($cells ? $cells->length : 0)
       );
@@ -110,20 +93,6 @@ function parse_advance_decline_ratio_html_($html) {
     $date = normalize_text_(
       $cells->item(0)->textContent
     );
-
-    $advancingIssues =
-      normalize_advance_decline_ratio_integer_(
-        $cells->item(4)->textContent,
-        $i + 1,
-        'プライム値上がり銘柄数'
-      );
-
-    $decliningIssues =
-      normalize_advance_decline_ratio_integer_(
-        $cells->item(5)->textContent,
-        $i + 1,
-        'プライム値下がり銘柄数'
-      );
 
     $ratio25 =
       normalize_advance_decline_ratio_number_(
@@ -168,8 +137,6 @@ function parse_advance_decline_ratio_html_($html) {
 
     $rows[] = array(
       'date' => $date,
-      'advancing_issues' => $advancingIssues,
-      'declining_issues' => $decliningIssues,
       'ratio_25' => $ratio25,
       'ratio_15' => $ratio15,
       'ratio_10' => $ratio10,
@@ -184,35 +151,6 @@ function parse_advance_decline_ratio_html_($html) {
 
   return array(
     'rows' => $rows,
-  );
-}
-
-/**
- * 値上がり銘柄数・値下がり銘柄数を検証し、
- * 3桁ごとのカンマ区切りへ正規化する。
- */
-function normalize_advance_decline_ratio_integer_(
-  $value,
-  $rowNumber,
-  $fieldName
-) {
-  $text = normalize_text_((string)$value);
-  $numericText = str_replace(',', '', $text);
-
-  if (!preg_match('/^\d+$/', $numericText)) {
-    throw new RuntimeException(
-      "騰落レシオの整数形式が不正です: " .
-      "row={$rowNumber}" .
-      " field={$fieldName}" .
-      " value={$text}"
-    );
-  }
-
-  return number_format(
-    (int)$numericText,
-    0,
-    '.',
-    ','
   );
 }
 
@@ -309,14 +247,12 @@ function build_advance_decline_ratio_message_($parsed) {
 
   $lines[] = '■騰落レシオ';
   $lines[] = '';
-  $lines[] = '【騰落レシオ 90営業日】';
+  $lines[] = '【騰落レシオ】';
 
   $lines[] = implode(
     "\t",
     array(
       '日付',
-      'プライム値上がり銘柄数',
-      'プライム値下がり銘柄数',
       '騰落レシオ(25日)',
       '騰落レシオ(15日)',
       '騰落レシオ(10日)',
@@ -329,8 +265,6 @@ function build_advance_decline_ratio_message_($parsed) {
       "\t",
       array(
         $row['date'],
-        $row['advancing_issues'],
-        $row['declining_issues'],
         $row['ratio_25'],
         $row['ratio_15'],
         $row['ratio_10'],

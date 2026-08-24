@@ -2756,19 +2756,10 @@ function convertReportToWordPressHtml_(
 
   /*
    * WB表示上だけ変更する小見出し名
+   * 以下のように、追加する。
+   * '変換対象の文字列':'変換後の文字列'
    */
-  const subheadingDisplayNames = {
-
-    '業種別株価指数 変化率一覧 2ヶ月・連続':
-      '業種別株価指数 上昇・下落連続日数',
-
-    '騰落レシオ 90営業日':
-      '騰落レシオ',
-
-    '空売り比率 90営業日':
-      '空売り比率'
-
-  };
+  const subheadingDisplayNames = {};
 
   /**
    * WB表示用文字列変換
@@ -2782,6 +2773,182 @@ function convertReportToWordPressHtml_(
         /日本225/g,
         '日経225'
       );
+  }
+  
+    /**
+   * WB表示用の表ヘッダー変換
+   */
+  function convertTableHeaderText(
+    value
+  ) {
+
+    const header =
+      String(
+        value || ''
+      ).trim();
+
+    /*
+     * ■日経225バリュエーション
+     *
+     * 【指数ベース】【加重平均】とも
+     * 同じヘッダー名へ変換する。
+     */
+    if (
+      currentBlockName ===
+        '日経225バリュエーション'
+    ) {
+
+      const map = {
+
+        '日経225PER':
+          'PER',
+
+        '日経225PBR':
+          'PBR',
+
+        '日経225EPS':
+          'EPS',
+
+        '日経225BPS':
+          'BPS',
+
+        '日経225益回り':
+          '益回り',
+
+        '日経225配当利回り':
+          '配当利回り',
+
+        '日本国債利回り':
+          '日本国債利回り',
+
+        '日本株225':
+          '日経平均',
+
+        '日本株225(変化)':
+          '前日比',
+
+        '日経平均':
+          '日経平均',
+
+        '前日比':
+          '前日比',
+
+        'プライム出来高(百万株)':
+          'プライム出来高(百万株)'
+
+      };
+
+
+      return (
+        map[header] ||
+        header
+      );
+
+    }
+    
+    
+    /*
+     * ■米国株バリュエーション
+     *
+     * 【予想PER】【実績PER】とも
+     * 同じヘッダー名へ変換する。
+     */
+    if (
+      currentBlockName ===
+        '米国株バリュエーション'
+    ) {
+
+      const map = {
+
+        '日経225株価':
+          '日経225',
+
+        '日経225PER':
+          'PER',
+
+        '日経225配当利回り':
+          'DY',
+
+        'DOW30株価':
+          'DOW30',
+
+        'DOW30PER':
+          'PER',
+
+        'DOW30配当利回り':
+          'DY',
+
+        'S&P500株価':
+          'S&P500',
+
+        'S&P500PER':
+          'PER',
+
+        'S&P500配当利回り':
+          'DY',
+
+        'NASDAQ100株価':
+          'NASDAQ100',
+
+        'NASDAQ100PER':
+          'PER',
+
+        'NASDAQ100配当利回り':
+          'DY',
+
+        'Russell2000株価':
+          'Russell2000',
+
+        'Russell2000PER':
+          'PER',
+
+        'Russell2000配当利回り':
+          'DY'
+
+      };
+
+
+      return (
+        map[header] ||
+        header
+      );
+
+    }
+    
+    /*
+     * ■騰落レシオ
+     */
+    if (
+      currentBlockName ===
+        '騰落レシオ'
+    ) {
+
+      const map = {
+
+        '騰落レシオ(25日)':
+          '25日',
+
+        '騰落レシオ(15日)':
+          '15日',
+
+        '騰落レシオ(10日)':
+          '10日',
+
+        '騰落レシオ(6日)':
+          '6日'
+
+      };
+
+
+      return (
+        map[header] ||
+        header
+      );
+
+    }
+
+
+    return header;
   }
 
   /**
@@ -3042,8 +3209,10 @@ function convertReportToWordPressHtml_(
             alignClass +
             '">' +
             escapeHtml_(
-              convertDisplayText(
-                cell.trim()
+              convertTableHeaderText(
+                convertDisplayText(
+                  cell
+                )
               )
             ) +
             '</th>'

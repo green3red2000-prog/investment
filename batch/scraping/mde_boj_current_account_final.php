@@ -718,25 +718,97 @@ function boj_current_account_final_parse_amount_(
 }
 
 /**
+ * 正数のプラス記号を表示しない項目か判定する。
+ *
+ * @param string $item
+ * @return bool
+ */
+function boj_current_account_final_omit_positive_sign_(
+  $item
+) {
+  $label =
+    boj_current_account_final_normalize_label_(
+      $item
+    );
+
+  $fixedItems =
+    array(
+      '当座預金残高',
+      '準備預金残高',
+      '積み終了先',
+      '超過準備',
+      '非準預先残高',
+      'マネタリーベース',
+    );
+
+  if (
+    in_array(
+      $label,
+      $fixedItems,
+      true
+    )
+  ) {
+    return
+      true;
+  }
+
+  if (
+    preg_match(
+      '/^積み期間（.+）の所要準備額（積数）$/u',
+      $label
+    )
+  ) {
+    return
+      true;
+  }
+
+  if (
+    preg_match(
+      '/^積み期間（.+）の所要準備額（１日平均）$/u',
+      $label
+    )
+  ) {
+    return
+      true;
+  }
+
+  if (
+    preg_match(
+      '/^\d{1,2}\/\d{1,2}日以降の残り要積立額（積数）$/u',
+      $label
+    )
+  ) {
+    return
+      true;
+  }
+
+  if (
+    preg_match(
+      '/^\d{1,2}\/\d{1,2}日以降の残り要積立額（１日平均）$/u',
+      $label
+    )
+  ) {
+    return
+      true;
+  }
+
+  return
+    false;
+}
+
+/**
  * 数値を表示用へ整形する。
  *
  * 正数:
  *   +100
+ *   または100
  *
  * 負数:
  *   -3,400
- *
- * 0:
- *   0
- *
- * 空欄:
- *   ー
- *
- * @param int|null $value
- * @return string
  */
 function format_boj_current_account_final_amount_(
-  $value
+  $value,
+  $showPositiveSign = true
 ) {
   if ($value === null) {
     return
@@ -748,7 +820,7 @@ function format_boj_current_account_final_amount_(
 
   if ($value > 0) {
     return
-      '+' .
+      ($showPositiveSign ? '+' : '') .
       number_format(
         $value
       );
@@ -962,19 +1034,27 @@ function build_boj_current_account_final_message_(
       );
     }
 
+    $showPositiveSign =
+      !boj_current_account_final_omit_positive_sign_(
+        $row['item']
+      );
+
     $projection =
       format_boj_current_account_final_amount_(
-        $row['projection']
+        $row['projection'],
+        $showPositiveSign
       );
 
     $provisional =
       format_boj_current_account_final_amount_(
-        $row['provisional']
+        $row['provisional'],
+        $showPositiveSign
       );
 
     $final =
       format_boj_current_account_final_amount_(
-        $row['final']
+        $row['final'],
+        $showPositiveSign
       );
 
     $item =

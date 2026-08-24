@@ -489,7 +489,7 @@ function build_tosho_sector_index_message_($parsed) {
   }
   
   $lines[] = '';
-  $lines[] = "【業種別株価指数 変化率一覧 2ヶ月・連続】";
+  $lines[] = "【業種別株価指数 上昇・下落連続日数】";
   $lines[] = "方向\t連続日数\t業種";
 
   foreach ($parsed['continuous'] as $row) {
