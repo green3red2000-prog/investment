@@ -707,6 +707,21 @@ function format_global_buffett_decimal_(
     );
   }
 
+  /*
+   * 実績差では、差が0の場合に
+   * 「±0」と表記されることがある。
+   *
+   * ±付きの0だけを0として正規化する。
+   */
+  if (
+    preg_match(
+      '/^±0(?:\.0+)?$/u',
+      $original
+    )
+  ) {
+    $original = '0';
+  }
+
   $raw =
     str_replace(
       array(
