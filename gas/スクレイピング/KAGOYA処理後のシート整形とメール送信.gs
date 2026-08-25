@@ -46,6 +46,7 @@ function postProcess_messages_5minTrigger() {
       '全銘柄日足取得_メッセージ_',
       '全銘柄日足分析_メッセージ_',
       '大量保有速報_メッセージ_',
+      'ブロックIP集計_メッセージ_',
       '市況関連データ抽出_ALL_メッセージ_',
       '市況関連データ抽出_GROUP1_メッセージ_',
       '市況関連データ抽出＃経済スケジュール_メッセージ_',      
@@ -335,6 +336,21 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
   }
 
   const { basePrefix, dateStr, sheetName } = parsed;
+
+  // ブロックIP集計はスプレッドシートを使用せず、
+  // メッセージTXTの内容だけをメール送信する
+  if (basePrefix === 'ブロックIP集計') {
+    const bodyText = msgFile.getBlob().getDataAsString('UTF-8');
+    const subject = `${basePrefix}_${dateStr}`;
+
+    GmailApp.sendEmail(CONFIG.mailTo, subject, bodyText);
+
+    // 対象のメッセージファイル削除
+    msgFile.setTrashed(true);
+
+    console.log(`完了: ${msgName}`);
+    return;
+  }
 
   // 市況関連データ抽出_ALL / GROUP1 はスプレッドシートを使用せず、
   // 対応するレポートTXTのURLをメール本文に付加して送信する
