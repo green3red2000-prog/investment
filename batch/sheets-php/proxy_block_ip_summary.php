@@ -4,7 +4,8 @@ declare(strict_types=1);
 /**
  * ブロックIP集計
  *
- * proxy_url_failures.json を読み込み、
+ * webshare_proxies.txt と proxy_url_failures.json を読み込み、
+ * 現在有効なプロキシIPのみを対象として、
  * 1. URLごとの failures 別件数
  * 2. failures ごとの IP 別件数
  * を集計してTXT出力し、Google Driveへアップロードする。
@@ -21,9 +22,10 @@ date_default_timezone_set('Asia/Tokyo');
 // =======================================================
 // 設定
 // =======================================================
-const JOB_NAME   = 'ブロックIP集計';
-const INPUT_FILE = '/opt/invest/scraping/state/proxy_url_failures.json';
-const OUTPUT_DIR = '/opt/invest/sheets-php/tmp';
+const JOB_NAME          = 'ブロックIP集計';
+const PROXY_LIST_FILE   = '/opt/invest/conf/webshare_proxies.txt';
+const BLOCK_IP_FILE     = '/opt/invest/scraping/state/proxy_url_failures.json';
+const OUTPUT_DIR        = '/opt/invest/sheets-php/tmp';
 
 // =======================================================
 // メイン
@@ -39,16 +41,20 @@ try {
     echo JOB_NAME . PHP_EOL;
     echo "=====================================================" . PHP_EOL;
     echo "date={$todayIso}" . PHP_EOL;
-    echo "input=" . INPUT_FILE . PHP_EOL;
+    echo "proxy_list=" . PROXY_LIST_FILE . PHP_EOL;
+    echo "block_ip=" . BLOCK_IP_FILE . PHP_EOL;
 
-    // 1) ブロックIPデータの取得
-    $data = loadBlockIpData(INPUT_FILE);
+    // 1) プロキシIPリストとブロックIPリストの取得
+    $proxyIpSet = loadProxyIpList(PROXY_LIST_FILE);
+    $data       = loadBlockIpData(BLOCK_IP_FILE);
 
+    echo 'proxy_count=' . count($proxyIpSet) . PHP_EOL;
     echo 'url_count=' . count($data) . PHP_EOL;
 
     // 2) 集計処理
-    list($urlFailureCounts, $failureIpCounts) = aggregateBlockIpData($data);
-
+    list($urlFailureCounts, $failureIpCounts) =
+        aggregateBlockIpData($data, $proxyIpSet);
+    
     // 3) テキストファイル出力
     $subjectLine = JOB_NAME . '：' . $todayIso;
     $summaryText = buildSummaryText($urlFailureCounts, $failureIpCounts);
@@ -76,6 +82,92 @@ try {
 // =======================================================
 // 入力
 // =======================================================
+
+/**
+ * 現在有効なWebshareプロキシ一覧を読み込む。
+ *
+ * ファイル形式:
+ * host:port:user:pass
+ *
+ * 集計時の突合に使用するため、
+ * host:port のみをキーにしたセットを返す。
+ *
+ * @return array<string, bool>
+ */
+function loadProxyIpList(string $file): array
+{
+    if (!is_readable($file)) {
+        throw new RuntimeException(
+            "プロキシIPリストを読み込めません: {$file}"
+        );
+    }
+
+    $lines = file(
+        $file,
+        FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES
+    );
+
+    if ($lines === false) {
+        throw new RuntimeException(
+            "プロキシIPリストの読み込みに失敗しました: {$file}"
+        );
+    }
+
+    $proxyIpSet = [];
+
+    foreach ($lines as $line) {
+        $line = trim((string)$line);
+
+        if ($line === '' || strpos($line, '#') === 0) {
+            continue;
+        }
+
+        // host:port:user:pass
+        $parts = explode(':', $line);
+
+        if (count($parts) !== 4) {
+            fwrite(
+                STDERR,
+                "[WARN] Invalid proxy format skipped: {$line}" .
+                PHP_EOL
+            );
+            continue;
+        }
+
+        $host = trim($parts[0]);
+        $port = trim($parts[1]);
+
+        if ($host === '' || $port === '') {
+            fwrite(
+                STDERR,
+                "[WARN] Invalid proxy skipped: {$line}" .
+                PHP_EOL
+            );
+            continue;
+        }
+
+        if (!ctype_digit($port)) {
+            fwrite(
+                STDERR,
+                "[WARN] Invalid proxy port skipped: {$line}" .
+                PHP_EOL
+            );
+            continue;
+        }
+
+        $proxyIp = $host . ':' . $port;
+
+        $proxyIpSet[$proxyIp] = true;
+    }
+
+    if (count($proxyIpSet) === 0) {
+        throw new RuntimeException(
+            "有効なプロキシIPがありません: {$file}"
+        );
+    }
+
+    return $proxyIpSet;
+}
 
 /**
  * proxy_url_failures.json を読み込む。
@@ -120,9 +212,13 @@ function loadBlockIpData(string $file): array
  *   同じIPが複数URLに存在する場合は合算する。
  *
  * @param array<string, mixed> $data
+ * @param array<string, bool> $proxyIpSet
  * @return array{0: array<string, array<int, int>>, 1: array<int, array<string, array{count:int, order:int}>>}
  */
-function aggregateBlockIpData(array $data): array
+function aggregateBlockIpData(
+    array $data,
+    array $proxyIpSet
+): array
 {
     $urlFailureCounts = [];
     $failureIpCounts  = [];
@@ -139,6 +235,14 @@ function aggregateBlockIpData(array $data): array
 
         foreach ($ipEntries as $ip => $entry) {
             if (!is_array($entry)) {
+                continue;
+            }
+
+            $ipKey = (string)$ip;
+
+            // 現在のWebshareプロキシリストに存在しないIPは
+            // 集計対象外とする。
+            if (!isset($proxyIpSet[$ipKey])) {
                 continue;
             }
 
@@ -163,8 +267,6 @@ function aggregateBlockIpData(array $data): array
             if (!isset($failureIpCounts[$failures])) {
                 $failureIpCounts[$failures] = [];
             }
-
-            $ipKey = (string)$ip;
 
             if (!isset($failureIpCounts[$failures][$ipKey])) {
                 $failureIpCounts[$failures][$ipKey] = [
