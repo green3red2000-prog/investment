@@ -1138,17 +1138,12 @@
     }
 
     /**
-     * AIプロンプトとニュース一覧をコピーする
+     * ニュース一覧をクリップボードへコピーする
      *
      * コピー成功後に、
      * 表示中ニュースのIDを使って既読にする。
      */
     async function copyAllText() {
-      const aiPrompt =
-        document.getElementById(
-          'aiPrompt'
-        );
-
       const copyButton =
         document.getElementById(
           'copyButton'
@@ -1159,31 +1154,17 @@
           'status'
         );
 
-      const promptText =
-        aiPrompt.value.trim();
-
       const newsText =
         createNewsCopyText();
 
-      const copyParts = [];
+     const copyText = newsText;
 
-      if (promptText !== '') {
-        copyParts.push(promptText);
-      }
+     if (!copyText) {
+       status.textContent =
+         'コピーする内容がありません';
 
-      if (newsText !== '') {
-        copyParts.push(newsText);
-      }
-
-      const copyText =
-        copyParts.join('\n\n');
-
-      if (!copyText) {
-        status.textContent =
-          'コピーする内容がありません';
-
-        return;
-      }
+       return;
+     }
 
       copyButton.disabled = true;
 
