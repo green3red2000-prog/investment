@@ -30,3 +30,10 @@ batch/j_quants/conf/config.php
 #data/kabutan/daily_market_snapshot/*/10_download_*.xlsx
 data/kabutan/daily_market_snapshot/*
 data/kabutan/basicinfo/*
+
+# 個別銘柄情報収集ツール
+PowerShell/tools/StockResearch/*
+!PowerShell/tools/StockResearch/stock_research_snapshot.bat
+!PowerShell/tools/StockResearch/stock_research_snapshot.ps1
+!PowerShell/tools/StockResearch/TR_証券コード_連番3桁.txt
+!PowerShell/tools/StockResearch/AIプロンプト.txt
