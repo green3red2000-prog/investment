@@ -47,6 +47,7 @@
     }
 
     .copy-button,
+    .prompt-copy-button,
     .save-button,
     .move-button,
     .reload-button {
@@ -64,6 +65,14 @@
 
     .copy-button:hover {
       background-color: #125ea8;
+    }
+    .prompt-copy-button {
+      background-color: #e3f2fd;
+      color: #0d47a1;
+    }
+
+    .prompt-copy-button:hover {
+      background-color: #bbdefb;
     }
 
     .save-button {
@@ -94,6 +103,7 @@
     }
 
     .copy-button:disabled,
+    .prompt-copy-button:disabled,
     .save-button:disabled,
     .move-button:disabled,
     .reload-button:disabled {
@@ -320,6 +330,7 @@
       }
 
       .copy-button,
+      .prompt-copy-button,
       .save-button,
       .move-button,
       .reload-button {
@@ -348,6 +359,16 @@
           disabled
         >
           全てコピー
+        </button>
+
+        <button
+          id="copyPromptButton"
+          class="prompt-copy-button"
+          type="button"
+          onclick="copyAiPrompt()"
+          disabled
+        >
+          AIプロンプトコピー
         </button>
 
         <button
@@ -444,6 +465,11 @@
           'copyButton'
         );
 
+      const copyPromptButton =
+        document.getElementById(
+          'copyPromptButton'
+        );
+
       const savePromptButton =
         document.getElementById(
           'savePromptButton'
@@ -475,6 +501,7 @@
         );
 
       copyButton.disabled = true;
+      copyPromptButton.disabled = true;
       savePromptButton.disabled = true;
       moveToLastReadButton.disabled = true;
       reloadButton.disabled = true;
@@ -520,6 +547,11 @@
           'copyButton'
         );
 
+      const copyPromptButton =
+        document.getElementById(
+          'copyPromptButton'
+        );
+
       const savePromptButton =
         document.getElementById(
           'savePromptButton'
@@ -554,6 +586,7 @@
         ).trim() || null;
 
       aiPrompt.disabled = false;
+      copyPromptButton.disabled = false;
       savePromptButton.disabled = false;
       reloadButton.disabled = false;
 
@@ -1048,6 +1081,63 @@
     }
 
     /**
+     * AIプロンプトだけをクリップボードへコピーする
+     */
+    async function copyAiPrompt() {
+      const aiPrompt =
+        document.getElementById(
+          'aiPrompt'
+        );
+
+      const copyPromptButton =
+        document.getElementById(
+          'copyPromptButton'
+        );
+
+      const status =
+        document.getElementById(
+          'status'
+        );
+
+      const promptText =
+        aiPrompt.value.trim();
+
+      if (!promptText) {
+        status.textContent =
+          'AIプロンプトが空白です';
+
+        return;
+      }
+
+      copyPromptButton.disabled = true;
+
+      try {
+        await navigator.clipboard.writeText(
+          promptText
+        );
+    
+      } catch (error) {
+        try {
+          fallbackCopy(promptText);
+
+        } catch (fallbackError) {
+          copyPromptButton.disabled = false;
+
+          status.textContent =
+            'AIプロンプトのコピーに失敗しました';
+
+          return;
+        }
+      }
+
+      copyPromptButton.disabled = false;
+
+      showTemporaryStatus(
+        'AIプロンプトをコピーしました'
+      );
+    }
+
+    /**
      * AIプロンプトとニュース一覧をコピーする
      *
      * コピー成功後に、
@@ -1260,6 +1350,11 @@
           'copyButton'
         );
 
+      const copyPromptButton =
+        document.getElementById(
+          'copyPromptButton'
+        );
+
       const savePromptButton =
         document.getElementById(
           'savePromptButton'
@@ -1294,6 +1389,7 @@
       currentLastReadId = null;
 
       copyButton.disabled = true;
+      copyPromptButton.disabled = true;
       savePromptButton.disabled = true;
       moveToLastReadButton.disabled = true;
       reloadButton.disabled = false;
