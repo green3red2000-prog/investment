@@ -21,7 +21,7 @@
  * 「リアルタイム主要株価指数」に掲載されている
  * 全行を取得する。
  *
- * 「オルカンeMAXIS Slim」は除外する。
+ * 「オルカン」は除外する。
  *
  * @param string $html
  * @return array
@@ -151,17 +151,27 @@ function parse_global_market_realtime_html_($html) {
     }
 
     /*
-     * オルカンeMAXIS Slimは出力対象外とする。
+     * オルカンは出力対象外とする。
+     *
+     * 取得元サイトの名称変更に対応する。
+     *   旧: オルカン eMAXIS Slim
+     *   新: オルカン MAXIS
      */
     if (
       mb_strpos(
         $name,
         'オルカン'
       ) !== false &&
-      mb_strpos(
-        $name,
-        'eMAXIS Slim'
-      ) !== false
+      (
+        mb_strpos(
+          $name,
+          'eMAXIS Slim'
+        ) !== false ||
+        mb_strpos(
+          $name,
+          'MAXIS'
+        ) !== false
+      )
     ) {
       $excludedOrukanCount++;
       continue;
@@ -390,7 +400,7 @@ function parse_global_market_realtime_html_($html) {
   }
 
   /*
-   * 除外対象のオルカンeMAXIS Slimは
+   * 除外対象のオルカンは
    * 1件存在することを前提とする。
    *
    * HTML構造変更や名称変更を検知するため、
@@ -398,7 +408,7 @@ function parse_global_market_realtime_html_($html) {
    */
   if ($excludedOrukanCount !== 1) {
     throw new RuntimeException(
-      "オルカンeMAXIS Slimの除外件数が1件ではありません: " .
+      "オルカンの除外件数が1件ではありません: " .
       $excludedOrukanCount
     );
   }

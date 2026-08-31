@@ -250,6 +250,7 @@ const fs = require('fs');
             );
           });
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -301,6 +302,7 @@ const fs = require('fs');
             updatedText !== ''
           );
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -360,6 +362,7 @@ const fs = require('fs');
             })
           );
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -611,6 +614,7 @@ const fs = require('fs');
             })
           );
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -950,6 +954,7 @@ const fs = require('fs');
             }
           );
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -1041,6 +1046,7 @@ const fs = require('fs');
               );
             });
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -1145,6 +1151,7 @@ const fs = require('fs');
               );
             });
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -1259,6 +1266,7 @@ const fs = require('fs');
               return true;
             });
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -1303,8 +1311,12 @@ const fs = require('fs');
           }
 
           /*
-           * 「オルカンeMAXIS Slim」も含め、
+           * 「オルカン」も含め、
            * 表全体が生成済みであることを確認する。
+           *
+           * 取得元サイトの名称変更に対応する。
+           *   旧: オルカン eMAXIS Slim
+           *   新: オルカン MAXIS
            *
            * 解析時にオルカンのみ除外するため、
            * DOM取得段階では存在していてよい。
@@ -1327,7 +1339,10 @@ const fs = require('fs');
 
               return (
                 text.includes('オルカン') &&
-                text.includes('eMAXIS Slim')
+                (
+                  text.includes('eMAXIS Slim') ||
+                  text.includes('MAXIS')
+                )
               );
             });
 
@@ -1456,6 +1471,7 @@ const fs = require('fs');
             return true;
           });
         },
+        undefined,
         {
           timeout: 60_000,
         }
@@ -1631,6 +1647,7 @@ const fs = require('fs');
             return true;
           });
         },
+        undefined,
         {
           timeout: 60_000,
         }
