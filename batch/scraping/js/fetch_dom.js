@@ -150,6 +150,80 @@ const fs = require('fs');
     }
   }  
   
+  // Atlanta Fed GDPNow
+  const isGdpNow =
+    /^https:\/\/www\.atlantafed\.org\/research-and-data\/data\/gdpnow(?:[/?#].*)?$/i.test(
+      url
+    );
+
+  if (isGdpNow) {
+    try {
+      await page.waitForFunction(
+        () => {
+          const cards =
+            Array.from(
+              document.querySelectorAll(
+                'div.card.data-card'
+              )
+            );
+
+          if (cards.length !== 1) {
+            return false;
+          }
+
+          const card = cards[0];
+
+          const value =
+            card.querySelector(
+              '.data-value'
+            );
+
+          const strongTexts =
+            Array.from(
+              card.querySelectorAll('strong')
+            ).map(node =>
+              (node.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+            );
+
+          const hasEstimatePeriod =
+            strongTexts.some(text =>
+              text.includes(
+                'GDPNow Estimate for'
+              )
+            );
+
+          const hasUpdated =
+            strongTexts.some(text =>
+              text === 'Updated:'
+            );
+
+          return (
+            value !== null &&
+            (value.textContent || '').trim() !== '' &&
+            hasEstimatePeriod &&
+            hasUpdated
+          );
+        },
+        undefined,
+        {
+          timeout: 60_000,
+        }
+      );
+
+      console.log(
+        '[INFO] GDPNow data card DOM ready'
+      );
+
+    } catch (e) {
+      throw new Error(
+        'GDPNowデータカードの動的DOM取得に失敗しました: ' +
+        (e && e.message ? e.message : e)
+      );
+    }
+  }
+  
   // nikkei225jp.com 東証業種別株価指数
   // 外部JavaScriptデータのAjax取得後にランキング表が生成されるため、
   // 値上がり・値下がりランキング各10件と連続行の生成完了を待つ。
