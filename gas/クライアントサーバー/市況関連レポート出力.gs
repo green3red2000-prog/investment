@@ -812,7 +812,7 @@ function createEarningsDetailText_(data) {
     '上場区分',
     'PER',
     'PBR',
-    '利回り'
+    'DY'
   ];
 
 
