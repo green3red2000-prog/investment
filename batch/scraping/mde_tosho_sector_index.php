@@ -157,29 +157,81 @@ function parse_tosho_sector_index_html_($html) {
     $sector = normalize_text_($headerNodes->item($i)->textContent);
     $cell = $continuousCells->item($i);
     $days = normalize_text_($cell->textContent);
-    $style = strtolower((string)$cell->getAttribute('style'));
+
+    $class =
+      (string)$cell->getAttribute('class');
+
+    $style =
+      strtolower(
+        (string)$cell->getAttribute('style')
+      );
 
     $direction = '';
 
-    // 当該サイトでは赤が下落、緑が上昇を表す。
+    /*
+     * 現在のページでは、
+     * 直近営業日の騰落方向を以下のclassで表している。
+     *
+     * COL_P3：上昇
+     * COL_M3：下落
+     * COL_Z3：上昇・下落なし
+     */
     if (
-      strpos($style, '#ff4444') !== false ||
-      strpos($style, 'rgb(255, 68, 68)') !== false
+      preg_match(
+        '/(?:^|\s)COL_P3(?:\s|$)/',
+        $class
+      )
+    ) {
+      $direction = '上昇';
+    } elseif (
+      preg_match(
+        '/(?:^|\s)COL_M3(?:\s|$)/',
+        $class
+      )
     ) {
       $direction = '下落';
     } elseif (
-      strpos($style, '#11cc11') !== false ||
-      strpos($style, 'rgb(17, 204, 17)') !== false
+      preg_match(
+        '/(?:^|\s)COL_Z3(?:\s|$)/',
+        $class
+      )
     ) {
-      $direction = '上昇';
+      $direction = 'ー';
+    } else {
+      /*
+       * 過去の保存済みHTMLとの互換性のため、
+       * 旧style色による判定も残す。
+       */
+      if (
+        strpos($style, '#ff4444') !== false ||
+        strpos($style, 'rgb(255, 68, 68)') !== false
+      ) {
+        $direction = '下落';
+      } elseif (
+        strpos($style, '#11cc11') !== false ||
+        strpos($style, 'rgb(17, 204, 17)') !== false
+      ) {
+        $direction = '上昇';
+      }
     }
 
     /*
-     * 当該ページでは、連続日数が1日の場合は数値が表示されず、
-     * 空欄となるため、空欄は1として扱う。
+     * 当該ページでは、
+     * 連続日数が1日の場合も0日の場合も
+     * セルの文字列自体は空欄となる。
+     *
+     * 上昇・下落の場合は1日、
+     * 「ー」の場合は0日として扱う。
      */
-    if ($days === '' && $direction !== '') {
-      $days = '1';
+    if ($days === '') {
+      if (
+        $direction === '上昇' ||
+        $direction === '下落'
+      ) {
+        $days = '1';
+      } elseif ($direction === 'ー') {
+        $days = '0';
+      }
     }
 
     if ($days !== '' && !preg_match('/^\d+$/', $days)) {
@@ -219,11 +271,13 @@ function parse_tosho_sector_index_html_($html) {
  * 並び順:
  *   1. 方向
  *        上昇
+ *        ー
  *        下落
  *        方向不明
  *
  *   2. 連続日数
  *        上昇：降順
+ *        ー：0
  *        下落：昇順
  *        方向不明：降順
  *
@@ -246,8 +300,9 @@ function sort_sector_continuous_by_direction_($continuous) {
     function ($a, $b) {
       $directionOrder = array(
         '上昇' => 1,
-        '下落' => 2,
-        ''     => 3,
+        'ー'   => 2,
+        '下落' => 3,
+        ''     => 4,
       );
 
       $directionA = isset($a['direction'])
@@ -260,11 +315,11 @@ function sort_sector_continuous_by_direction_($continuous) {
 
       $orderA = isset($directionOrder[$directionA])
         ? $directionOrder[$directionA]
-        : 3;
+        : 4;
 
       $orderB = isset($directionOrder[$directionB])
         ? $directionOrder[$directionB]
-        : 3;
+        : 4;
 
       /*
        * 第1ソートキー：方向
@@ -285,6 +340,7 @@ function sort_sector_continuous_by_direction_($continuous) {
        * 第2ソートキー：連続日数
        *
        * 上昇は降順
+       * ーは0
        * 下落は昇順
        * 方向不明は降順
        */
