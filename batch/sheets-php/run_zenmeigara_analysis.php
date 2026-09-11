@@ -65,7 +65,34 @@ const SHEETS_RETRY_BASE = 3;  // ベース秒（指数バックオフ用）
 main();
 
 function main(): void {
-  $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
+
+  $options = getopt(
+    '',
+    [
+      'date:',
+    ]
+  );
+
+  $today =
+    isset($options['date'])
+      ? trim((string)$options['date'])
+      : (
+          new DateTimeImmutable(
+            'now',
+            new DateTimeZone('Asia/Tokyo')
+          )
+        )->format('Y-m-d');
+
+  if (
+    !preg_match(
+      '/^\d{4}-\d{2}-\d{2}$/',
+      $today
+    )
+  ) {
+    throw new InvalidArgumentException(
+      "日付はyyyy-MM-dd形式で指定してください: {$today}"
+    );
+  }
 
   ensureDir(TMP_DIR);
 

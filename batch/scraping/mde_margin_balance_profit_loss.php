@@ -344,18 +344,16 @@ function format_margin_balance_shares_(
 
 /**
  * 売り残・買い残の金額を検証し、
- * 百万円単位から億円・兆円形式へ変換する。
+ * 億円単位から億円・兆円形式へ変換する。
  *
- * 百万円から億円への変換時は、
- * 100で除算して端数を切り捨てる。
+ * HTML上の金額は億円単位・小数点以下2桁で
+ * 表示されるため、小数点以下を切り捨てる。
  *
  * 例:
- *   893,083百万円
- *     → 8,930億円
+ *   8,930.83億円
  *     → 8930億円
  *
- *   6,200,665百万円
- *     → 62,006億円
+ *   62,006.65億円
  *     → 6兆2006億円
  */
 function format_margin_balance_amount_(
@@ -372,7 +370,7 @@ function format_margin_balance_amount_(
 
   if (
     $raw === '' ||
-    !preg_match('/^\d+$/', $raw)
+    !preg_match('/^\d+(?:\.\d+)?$/', $raw)
   ) {
     throw new RuntimeException(
       "信用残・評価損益の金額形式が不正です: " .
@@ -383,15 +381,14 @@ function format_margin_balance_amount_(
   }
 
   /*
-   * 元データは百万円単位。
+   * 元データは億円単位・小数点以下2桁。
    *
-   * 100百万円 = 1億円なので、
-   * 100で除算して端数切り捨て。
+   * レポートでは億円単位の整数で表示するため、
+   * 小数点以下を切り捨てる。
    */
   $okuYen =
-    intdiv(
-      (int)$raw,
-      100
+    (int)floor(
+      (float)$raw
     );
 
   /*

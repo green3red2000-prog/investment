@@ -1032,8 +1032,11 @@ function Add-UsMarketValuationExtractData {
       );
 
     /*
-     * Follow the original page's Data_write() logic
-     * and use dates with available DOW30 PER data.
+     * 必要項目がすべて取得できる日だけを対象とする。
+     *
+     * 取得元では最新日の一部指標だけ更新が遅れる場合があるため、
+     * DOW30 PERだけではなく、米国4指数の株価・予想PER・実績PER・
+     * 配当利回り、および日本225の必要項目が揃っている日を採用する。
      */
     var dates = [];
 
@@ -1047,26 +1050,75 @@ function Add-UsMarketValuationExtractData {
 
       if (
         !Array.isArray(sourceRow) ||
-        sourceRow.length <= dowPerColumn
+        sourceRow.length <= 16
       ) {
         continue;
       }
 
-      var per =
-        Number(
-          sourceRow[dowPerColumn]
-        );
+      var date =
+        window.gdt(sourceRow[0]);
 
-      if (
-        !isFinite(per) ||
-        per <= 0
+      /*
+       * US_DAILY
+       * [1]～[16] は今回使用する米国4指数の
+       * 株価・予想PER・実績PER・配当利回り。
+       */
+      var complete = true;
+
+      for (
+        var column = 1;
+        column <= 16;
+        column++
       ) {
+        var value =
+          Number(sourceRow[column]);
+
+        if (
+          !isFinite(value) ||
+          value <= 0
+        ) {
+          complete = false;
+          break;
+        }
+      }
+
+      if (!complete) {
         continue;
       }
 
-      dates.push(
-        window.gdt(sourceRow[0])
-      );
+      /*
+       * 日本225側の比較データも揃っていることを確認する。
+       */
+      var nikkeiValues = [
+        mapNikkeiPrice[date],
+        mapNikkeiPer[date],
+        mapNikkeiDividend[date]
+      ];
+
+      for (
+        var j = 0;
+        j < nikkeiValues.length;
+        j++
+      ) {
+        var value =
+          nikkeiValues[j];
+
+        if (
+          value === undefined ||
+          value === null ||
+          !isFinite(Number(value)) ||
+          Number(value) <= 0
+        ) {
+          complete = false;
+          break;
+        }
+      }
+
+      if (!complete) {
+        continue;
+      }
+
+      dates.push(date);
     }
 
     dates.sort();

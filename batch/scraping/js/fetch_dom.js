@@ -658,34 +658,23 @@ const fs = require('fs');
   if (isUsMarketValuation) {
     try {
       /*
-       * 初期表示の表が完成するまで待つ。
+       * 米国株バリュエーションの元データが
+       * 読み込まれるまで待つ。
+       *
+       * 表#datatblには、日本市場休場日や
+       * 週次PERの非更新日に空欄が存在するため、
+       * 表DOMの完成状態では判定しない。
        */
       await page.waitForFunction(
         () => {
-          const table = document.querySelector('#datatbl');
-
-          if (!table) {
-            return false;
-          }
-
-          const rows = Array.from(
-            table.querySelectorAll('tbody > tr')
-          ).filter(row => row.querySelectorAll('td').length === 16);
-
           return (
-            rows.length === 60 &&
-            rows.every(row => {
-              const cells = row.querySelectorAll('td');
-
-              return (
-                cells.length === 16 &&
-                (cells[0].textContent || '').trim() !== '' &&
-                (cells[1].textContent || '').trim() !== '' &&
-                (cells[2].textContent || '').trim() !== '' &&
-                (cells[4].textContent || '').trim() !== '' &&
-                (cells[5].textContent || '').trim() !== ''
-              );
-            })
+            Array.isArray(window.US_DAILY) &&
+            window.US_DAILY.length > 0 &&
+            Array.isArray(window.VOL_DAILY) &&
+            window.VOL_DAILY.length > 0 &&
+            Array.isArray(window.DAILY) &&
+            window.DAILY.length > 0 &&
+            typeof window.gdt === 'function'
           );
         },
         undefined,
@@ -695,181 +684,411 @@ const fs = require('fs');
       );
 
       /*
-       * 現在表示されている#datatblから、
-       * 60営業日分の16項目を取得する関数。
+       * 元データからPHP解析用のデータを作成する。
+       *
+       * US_DAILY
+       *   [1]  DOW30 price
+       *   [2]  S&P500 price
+       *   [3]  NASDAQ100 price
+       *   [4]  Russell2000 price
+       *   [5]  DOW30 forward PER
+       *   [6]  S&P500 forward PER
+       *   [7]  NASDAQ100 forward PER
+       *   [8]  Russell2000 forward PER
+       *   [9]  DOW30 trailing PER
+       *   [10] S&P500 trailing PER
+       *   [11] NASDAQ100 trailing PER
+       *   [12] Russell2000 trailing PER
+       *   [13] DOW30 dividend yield
+       *   [14] S&P500 dividend yield
+       *   [15] NASDAQ100 dividend yield
+       *   [16] Russell2000 dividend yield
+       *
+       * VOL_DAILY
+       *   [1] Nikkei225 price
+       *
+       * DAILY
+       *   [25] Nikkei225 PER
+       *   [27] Nikkei225 dividend yield
        */
-      const extractUsMarketValuationRows = async () => {
-        return await page.evaluate(() => {
-          const table = document.querySelector('#datatbl');
+      const valuationData =
+        await page.evaluate(() => {
+          const EXPECTED_MIN_ROW_COUNT = 5;
 
-          if (!table) {
-            throw new Error(
-              '米国株バリュエーションの表#datatblがありません。'
-            );
-          }
+          /*
+           * 数値を日付キーのMapへ変換する。
+           *
+           * 0以下、null、空文字、NaNは
+           * データなしとして除外する。
+           */
+          function buildMap(rows, valueColumn) {
+            const map = {};
 
-          const tableRows = Array.from(
-            table.querySelectorAll('tbody > tr')
-          ).filter(row => row.querySelectorAll('td').length === 16);
+            for (let i = 0; i < rows.length; i++) {
+              const row = rows[i];
 
-          return tableRows.map((row, index) => {
-            const cells = Array.from(
-              row.querySelectorAll('td')
-            );
+              if (
+                !Array.isArray(row) ||
+                row.length <= valueColumn
+              ) {
+                continue;
+              }
 
-            if (cells.length !== 16) {
-              throw new Error(
-                '米国株バリュエーションの列数が16列ではありません。' +
-                ` row=${index + 1} cells=${cells.length}`
-              );
+              const value =
+                Number(row[valueColumn]);
+
+              if (
+                !Number.isFinite(value) ||
+                value <= 0
+              ) {
+                continue;
+              }
+
+              map[window.gdt(row[0])] = value;
             }
 
-            const text = cell =>
-              (cell.textContent || '')
-                .replace(/\u00a0/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
+            return map;
+          }
 
-            return {
-              date: text(cells[0]),
+          /*
+           * 日本225
+           */
+          const mapNikkeiPrice =
+            buildMap(window.VOL_DAILY, 1);
 
-              nikkei225_price: text(cells[1]),
-              nikkei225_per: text(cells[2]),
-              nikkei225_dividend_yield: text(cells[3]),
+          const mapNikkeiPer =
+            buildMap(window.DAILY, 25);
 
-              dow30_price: text(cells[4]),
-              dow30_per: text(cells[5]),
-              dow30_dividend_yield: text(cells[6]),
+          const mapNikkeiDividend =
+            buildMap(window.DAILY, 27);
 
-              sp500_price: text(cells[7]),
-              sp500_per: text(cells[8]),
-              sp500_dividend_yield: text(cells[9]),
+          /*
+           * 米国4指数 株価
+           */
+          const mapDowPrice =
+            buildMap(window.US_DAILY, 1);
 
-              nasdaq100_price: text(cells[10]),
-              nasdaq100_per: text(cells[11]),
-              nasdaq100_dividend_yield: text(cells[12]),
+          const mapSp500Price =
+            buildMap(window.US_DAILY, 2);
 
-              russell2000_price: text(cells[13]),
-              russell2000_per: text(cells[14]),
-              russell2000_dividend_yield: text(cells[15]),
-            };
-          });
-        });
-      };
+          const mapNasdaq100Price =
+            buildMap(window.US_DAILY, 3);
 
-      /*
-       * ラジオボタンを切り替え、
-       * ページ側のonclick処理で表を更新する。
-       *
-       * value=0：予想PER
-       * value=1：実績PER
-       */
-      const selectUsMarketValuationBasis = async value => {
-        await page.evaluate(selectedValue => {
-          const input = document.querySelector(
-            `input[name="typeT1"][value="${selectedValue}"]`
-          );
+          const mapRussell2000Price =
+            buildMap(window.US_DAILY, 4);
 
-          if (!input) {
-            throw new Error(
-              '米国株バリュエーションの切替ボタンがありません: ' +
-              selectedValue
+          /*
+           * 予想PER
+           */
+          const mapDowForwardPer =
+            buildMap(window.US_DAILY, 5);
+
+          const mapSp500ForwardPer =
+            buildMap(window.US_DAILY, 6);
+
+          const mapNasdaq100ForwardPer =
+            buildMap(window.US_DAILY, 7);
+
+          const mapRussell2000ForwardPer =
+            buildMap(window.US_DAILY, 8);
+
+          /*
+           * 実績PER
+           */
+          const mapDowTrailingPer =
+            buildMap(window.US_DAILY, 9);
+
+          const mapSp500TrailingPer =
+            buildMap(window.US_DAILY, 10);
+
+          const mapNasdaq100TrailingPer =
+            buildMap(window.US_DAILY, 11);
+
+          const mapRussell2000TrailingPer =
+            buildMap(window.US_DAILY, 12);
+
+          /*
+           * 配当利回り
+           */
+          const mapDowDividend =
+            buildMap(window.US_DAILY, 13);
+
+          const mapSp500Dividend =
+            buildMap(window.US_DAILY, 14);
+
+          const mapNasdaq100Dividend =
+            buildMap(window.US_DAILY, 15);
+
+          const mapRussell2000Dividend =
+            buildMap(window.US_DAILY, 16);
+
+          /*
+           * 値が存在することを確認する。
+           */
+          function hasValue(map, date) {
+            return (
+              Object.prototype.hasOwnProperty.call(
+                map,
+                date
+              ) &&
+              Number.isFinite(Number(map[date])) &&
+              Number(map[date]) > 0
             );
           }
 
           /*
-           * inputはCSSで非表示になっているため、
-           * Playwrightの通常clickではなくDOM上でclickする。
+           * 予想PER・実績PERの両方を含め、
+           * PHP側で必要となる全項目が揃った日だけを
+           * 共通日付として採用する。
+           *
+           * これにより、
+           * forward_per と trailing_per の日付・行順を
+           * 必ず一致させる。
            */
-          input.click();
-        }, value);
+          const dates = [];
 
-        await page.waitForFunction(
-          selectedValue => {
-            const input = document.querySelector(
-              `input[name="typeT1"][value="${selectedValue}"]`
-            );
+          for (
+            let i = 0;
+            i < window.US_DAILY.length;
+            i++
+          ) {
+            const sourceRow =
+              window.US_DAILY[i];
 
-            if (!input || !input.checked) {
-              return false;
+            if (
+              !Array.isArray(sourceRow) ||
+              sourceRow.length <= 16
+            ) {
+              continue;
             }
 
-            const table = document.querySelector('#datatbl');
+            const date =
+              window.gdt(sourceRow[0]);
 
-            if (!table) {
-              return false;
+            const requiredMaps = [
+              mapNikkeiPrice,
+              mapNikkeiPer,
+              mapNikkeiDividend,
+
+              mapDowPrice,
+              mapSp500Price,
+              mapNasdaq100Price,
+              mapRussell2000Price,
+
+              mapDowForwardPer,
+              mapSp500ForwardPer,
+              mapNasdaq100ForwardPer,
+              mapRussell2000ForwardPer,
+
+              mapDowTrailingPer,
+              mapSp500TrailingPer,
+              mapNasdaq100TrailingPer,
+              mapRussell2000TrailingPer,
+
+              mapDowDividend,
+              mapSp500Dividend,
+              mapNasdaq100Dividend,
+              mapRussell2000Dividend,
+            ];
+
+            const complete =
+              requiredMaps.every(
+                map => hasValue(map, date)
+              );
+
+            if (!complete) {
+              continue;
             }
 
-            const rows = Array.from(
-              table.querySelectorAll('tbody > tr')
-            ).filter(
-              row => row.querySelectorAll('td').length === 16
-            );
-
-            return (
-              rows.length === 60 &&
-              rows.every(row => {
-                const cells =
-                  row.querySelectorAll('td');
-
-                return (
-                  cells.length === 16 &&
-                  (cells[0].textContent || '').trim() !== '' &&
-                  (cells[1].textContent || '').trim() !== '' &&
-                  (cells[2].textContent || '').trim() !== '' &&
-                  (cells[4].textContent || '').trim() !== '' &&
-                  (cells[5].textContent || '').trim() !== ''
-                );
-              })
-            );
-          },
-          value,
-          {
-            timeout: 30_000,
+            /*
+             * 同一日付が複数存在した場合に備え、
+             * 重複登録しない。
+             */
+            if (!dates.includes(date)) {
+              dates.push(date);
+            }
           }
-        );
 
-        /*
-         * ページ側のData_write()によるDOM書換え完了を
-         * 確実に待つための短い待機。
-         */
-        await page.waitForTimeout(300);
-      };
+          /*
+           * 最新日から降順に並べる。
+           */
+          dates.sort(
+            (a, b) => b.localeCompare(a)
+          );
 
-      /*
-       * 予想PERを取得する。
-       */
-      await selectUsMarketValuationBasis('0');
+          if (
+            dates.length <
+            EXPECTED_MIN_ROW_COUNT
+          ) {
+            throw new Error(
+              '米国株バリュエーションの完全データ取得件数が' +
+              `${EXPECTED_MIN_ROW_COUNT}件未満です: ` +
+              dates.length
+            );
+          }
+
+          /*
+           * PHP側で必要なのは最新5件だが、
+           * 将来の確認用として取得可能な完全データを
+           * 最大60件までJSONへ保存する。
+           */
+          const targetDates =
+            dates.slice(0, 60);
+
+          function buildRows(mode) {
+            const isForward =
+              mode === 'forward_per';
+
+            const mapDowPer =
+              isForward
+                ? mapDowForwardPer
+                : mapDowTrailingPer;
+
+            const mapSp500Per =
+              isForward
+                ? mapSp500ForwardPer
+                : mapSp500TrailingPer;
+
+            const mapNasdaq100Per =
+              isForward
+                ? mapNasdaq100ForwardPer
+                : mapNasdaq100TrailingPer;
+
+            const mapRussell2000Per =
+              isForward
+                ? mapRussell2000ForwardPer
+                : mapRussell2000TrailingPer;
+
+            return targetDates.map(date => {
+              return {
+                date: date,
+
+                nikkei225_price:
+                  mapNikkeiPrice[date],
+
+                nikkei225_per:
+                  mapNikkeiPer[date],
+
+                nikkei225_dividend_yield:
+                  mapNikkeiDividend[date],
+
+                dow30_price:
+                  mapDowPrice[date],
+
+                dow30_per:
+                  mapDowPer[date],
+
+                dow30_dividend_yield:
+                  mapDowDividend[date],
+
+                sp500_price:
+                  mapSp500Price[date],
+
+                sp500_per:
+                  mapSp500Per[date],
+
+                sp500_dividend_yield:
+                  mapSp500Dividend[date],
+
+                nasdaq100_price:
+                  mapNasdaq100Price[date],
+
+                nasdaq100_per:
+                  mapNasdaq100Per[date],
+
+                nasdaq100_dividend_yield:
+                  mapNasdaq100Dividend[date],
+
+                russell2000_price:
+                  mapRussell2000Price[date],
+
+                russell2000_per:
+                  mapRussell2000Per[date],
+
+                russell2000_dividend_yield:
+                  mapRussell2000Dividend[date],
+              };
+            });
+          }
+
+          const forwardPerRows =
+            buildRows('forward_per');
+
+          const trailingPerRows =
+            buildRows('trailing_per');
+
+          if (
+            forwardPerRows.length <
+            EXPECTED_MIN_ROW_COUNT
+          ) {
+            throw new Error(
+              '予想PERの取得件数が' +
+              `${EXPECTED_MIN_ROW_COUNT}件未満です: ` +
+              forwardPerRows.length
+            );
+          }
+
+          if (
+            trailingPerRows.length <
+            EXPECTED_MIN_ROW_COUNT
+          ) {
+            throw new Error(
+              '実績PERの取得件数が' +
+              `${EXPECTED_MIN_ROW_COUNT}件未満です: ` +
+              trailingPerRows.length
+            );
+          }
+
+          /*
+           * 予想PERと実績PERは
+           * 同じ日付・同じ行順でなければならない。
+           */
+          if (
+            forwardPerRows.length !==
+            trailingPerRows.length
+          ) {
+            throw new Error(
+              '予想PERと実績PERの取得件数が一致しません: ' +
+              `forward=${forwardPerRows.length} ` +
+              `trailing=${trailingPerRows.length}`
+            );
+          }
+
+          for (
+            let i = 0;
+            i < forwardPerRows.length;
+            i++
+          ) {
+            if (
+              forwardPerRows[i].date !==
+              trailingPerRows[i].date
+            ) {
+              throw new Error(
+                '予想PERと実績PERの日付が一致しません: ' +
+                `row=${i + 1} ` +
+                `forward=${forwardPerRows[i].date} ` +
+                `trailing=${trailingPerRows[i].date}`
+              );
+            }
+          }
+
+          return {
+            forward_per: forwardPerRows,
+            trailing_per: trailingPerRows,
+          };
+        });
 
       const forwardPerRows =
-        await extractUsMarketValuationRows();
-
-      /*
-       * 実績PERを取得する。
-       */
-      await selectUsMarketValuationBasis('1');
+        valuationData.forward_per;
 
       const trailingPerRows =
-        await extractUsMarketValuationRows();
-
-      if (forwardPerRows.length !== 60) {
-        throw new Error(
-          '予想PERの取得件数が60件ではありません: ' +
-          forwardPerRows.length
-        );
-      }
-
-      if (trailingPerRows.length !== 60) {
-        throw new Error(
-          '実績PERの取得件数が60件ではありません: ' +
-          trailingPerRows.length
-        );
-      }
+        valuationData.trailing_per;
 
       /*
        * PHP解析用JSONをHTMLへ埋め込む。
        *
-       * 既に同じ要素が存在する場合は削除してから作り直す。
+       * 既に同じ要素が存在する場合は
+       * 削除してから作り直す。
        */
       await page.evaluate(
         data => {
@@ -888,14 +1107,12 @@ const fs = require('fs');
 
           script.id = elementId;
           script.type = 'application/json';
-          script.textContent = JSON.stringify(data);
+          script.textContent =
+            JSON.stringify(data);
 
           document.body.appendChild(script);
         },
-        {
-          forward_per: forwardPerRows,
-          trailing_per: trailingPerRows,
-        }
+        valuationData
       );
 
       console.log(

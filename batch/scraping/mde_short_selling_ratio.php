@@ -81,9 +81,9 @@ function parse_short_selling_ratio_html_($html) {
       $rowNode
     );
 
-    if (!$cells || $cells->length !== 7) {
+    if (!$cells || $cells->length !== 8) {
       throw new RuntimeException(
-        "空売り比率90営業日の列数が7列ではありません: " .
+        "空売り比率90営業日の列数が8列ではありません: " .
         "row=" . ($i + 1) .
         " columns=" . ($cells ? $cells->length : 0)
       );
@@ -95,10 +95,11 @@ function parse_short_selling_ratio_html_($html) {
      *  1 日付
      *  2 日本225
      *  3 日本225(変化)
-     *  4 プライム出来高(百万株)
-     *  5 空売り比率合計
-     *  6 空売り比率(価格規制あり)
-     *  7 空売り比率(価格規制なし)
+     *  4 プライム売買代金(億円)
+     *  5 プライム出来高(百万株)
+     *  6 空売り比率合計
+     *  7 空売り比率(価格規制あり)
+     *  8 空売り比率(価格規制なし)
      */
 
     $date = normalize_text_(
@@ -107,21 +108,21 @@ function parse_short_selling_ratio_html_($html) {
 
     $totalRatio =
       normalize_short_selling_ratio_number_(
-        $cells->item(4)->textContent,
+        $cells->item(5)->textContent,
         $i + 1,
         '空売り比率合計'
       );
 
     $regulatedRatio =
       normalize_short_selling_ratio_number_(
-        $cells->item(5)->textContent,
+        $cells->item(6)->textContent,
         $i + 1,
         '空売り比率(価格規制あり)'
       );
 
     $unregulatedRatio =
       normalize_short_selling_ratio_number_(
-        $cells->item(6)->textContent,
+        $cells->item(7)->textContent,
         $i + 1,
         '空売り比率(価格規制なし)'
       );
