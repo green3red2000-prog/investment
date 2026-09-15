@@ -12,8 +12,11 @@ declare(strict_types=1);
  * - 投資分析レポート追加時は REPORTS と対応する生成関数を追加する
  *
  * 現在の投資分析レポート:
- *   industry33_operating_margin_distribution
- *   東証33業種別の営業利益率分布
+ *   shikiho_inf03_high_value_added
+ *   四季報登録用・INF_03高付加価値
+ *
+ *   shikiho_inf04_cost_absorption
+ *   四季報登録用・INF_04コスト吸収力
  */
 
 require '/opt/invest/j_quants/conf/config.php';
@@ -32,7 +35,11 @@ const SECURITY_CODE_MASTER_NAME = '証券コードマスタ';
  * generateReport() の switch に生成処理を追加する。
  */
 const REPORTS = [
-    'industry33_operating_margin_distribution' => '東証33業種別の営業利益率分布',
+    'shikiho_inf03_high_value_added'
+        => '四季報登録用・INF_03高付加価値',
+
+    'shikiho_inf04_cost_absorption'
+        => '四季報登録用・INF_04コスト吸収力',
 ];
 
 try {
@@ -65,9 +72,17 @@ try {
 function generateReport(string $reportKey): void
 {
     switch ($reportKey) {
-        case 'industry33_operating_margin_distribution':
-            downloadIndustry33OperatingMarginDistribution();
+
+
+        case 'shikiho_inf03_high_value_added':
+            downloadShikihoInf03HighValueAdded();
             return;
+
+
+        case 'shikiho_inf04_cost_absorption':
+            downloadShikihoInf04CostAbsorption();
+            return;
+
 
         default:
             throw new RuntimeException("未実装の投資分析レポートです: {$reportKey}");
@@ -82,8 +97,10 @@ function generateReport(string $reportKey): void
  * 採用する財務レコード:
  * - jquants_fins_summary
  * - CurPerType = FY
- * - Sales, OP がともにNULLでない
+ * - DocType = FYFinancialStatements_*
  * - 証券コードごとに DiscDate, DiscTime, DiscNo が最新の1件
+ * - 最新FY決算の Sales, OP がともにNULLでない
+ * - Sales / OP 欠損時に過去FY決算への遡及は行わない
  *
  * 業種:
  * - Google Drive「証券コードマスタ」の「33業種コード名」
@@ -94,176 +111,524 @@ function generateReport(string $reportKey): void
  * - TOKYO PRO Market（市場区分コード = 105）
  * - Sales <= 0
  */
-function downloadIndustry33OperatingMarginDistribution(): void
+
+/**
+ * 四季報オンライン Csv項目登録用「最新FY粗利率」をCSV出力する。
+ *
+ * CSV仕様:
+ * - ヘッダーなし
+ * - 1列目: 銘柄コード
+ * - 2列目: 粗利率（数値）
+ *
+ * preferred選択:
+ * - period_type = FY
+ * - period_basis = cumulative
+ * - status = OK / PARTIAL
+ * - 銘柄ごとに最新 fiscal_period_end を採用
+ * - 同じFYなら EDINET > TDNET
+ * - 同一sourceなら disclosed_at が新しい文書を優先
+ * - 同一日時なら id が大きいレコードを優先
+ *
+ * 粗利率:
+ *   gross_profit / revenue * 100
+ *
+ * revenue / gross_profit が欠損、または revenue <= 0 の銘柄は出力しない。
+ */
+
+/**
+ * 四季報オンライン Csv項目登録用「INF_03 高付加価値」をCSV出力する。
+ *
+ * 定義:
+ * - 最新FYの粗利率 = gross_profit / revenue * 100
+ * - 同じ東証33業種内で粗利率のパーセンタイル順位を算出
+ * - 業種内パーセンタイルを1～10点へ連続変換
+ * - P0 = 1点、P50 = 5点、P100 = 10点
+ * - P0～P50: 1点 → 5点へ線形変換
+ * - P50～P100: 5点 → 10点へ線形変換
+ *
+ * 対象外:
+ * - revenue / gross_profit 欠損
+ * - revenue <= 0
+ * - 33業種情報なし
+ * - 金融4業種
+ *   銀行業 / 証券・商品先物取引業 / 保険業 / その他金融業
+ *
+ * CSV仕様:
+ * - ヘッダーなし
+ * - 1列目: 銘柄コード
+ * - 2列目: INF_03スコア（1～10、6桁小数）
+ */
+function downloadShikihoInf03HighValueAdded(): void
 {
     $pdo = jqBuildPdo();
-
-    // 証券コード5桁 => 業種情報
     $securityMap = loadSecurityCodeMasterMap();
+    $preferredMap = fetchLatestPreferredFinancialActualsMap($pdo);
 
-    // DBから各銘柄の最新FY実績を取得
-    $latestFyRows = fetchLatestActualFyRows($pdo);
+    /*
+     * 金融4業種は粗利率の意味が一般事業会社と異なるため対象外。
+     * 業種コードを主判定とし、名称も念のため補助判定する。
+     */
+    $excludedIndustryCodes = [
+        '7050', // 銀行業
+        '7100', // 証券、商品先物取引業
+        '7150', // 保険業
+        '7200', // その他金融業
+    ];
 
-    // 業種ごとに営業利益率を格納
+    $excludedIndustryNames = [
+        '銀行業',
+        '証券、商品先物取引業',
+        '証券・商品先物取引業',
+        '保険業',
+        'その他金融業',
+    ];
+
     $groups = [];
-    $usedCompanyCount = 0;
+    $companies = [];
 
-    foreach ($latestFyRows as $row) {
-        $code5 = normalizeCode5((string)($row['Code'] ?? ''));
-        if ($code5 === '' || !isset($securityMap[$code5])) {
+    foreach ($securityMap as $code5 => $master) {
+        $securityCode = trim(
+            (string)($master['security_code'] ?? '')
+        );
+
+        if ($securityCode === '') {
             continue;
         }
 
-        $master = $securityMap[$code5];
-        $industryCode = trim((string)($master['industry33_code'] ?? ''));
-        $industryName = trim((string)($master['industry33_name'] ?? ''));
+        $industryCode = trim(
+            (string)($master['industry33_code'] ?? '')
+        );
 
-        if ($industryName === '') {
+        $industryName = trim(
+            (string)($master['industry33_name'] ?? '')
+        );
+
+        if (
+            $industryName === '' ||
+            in_array($industryCode, $excludedIndustryCodes, true) ||
+            in_array($industryName, $excludedIndustryNames, true)
+        ) {
             continue;
         }
 
-        $sales = toFloatOrNullLocal($row['Sales'] ?? null);
-        $op = toFloatOrNullLocal($row['OP'] ?? null);
+        $code4 = normalizeCode4FinancialActuals($securityCode);
 
-        if ($sales === null || $op === null || $sales <= 0.0) {
+        if (
+            $code4 === '' ||
+            !isset($preferredMap[$code4])
+        ) {
             continue;
         }
 
-        $margin = ($op / $sales) * 100.0;
+        $row = $preferredMap[$code4];
 
-        if (!is_finite($margin)) {
+        $revenue = toFloatOrNullLocal(
+            $row['revenue'] ?? null
+        );
+
+        $grossProfit = toFloatOrNullLocal(
+            $row['gross_profit'] ?? null
+        );
+
+        if (
+            $revenue === null ||
+            $grossProfit === null ||
+            $revenue <= 0.0
+        ) {
             continue;
         }
 
+        $grossMargin =
+            ($grossProfit / $revenue) * 100.0;
+
+        if (!is_finite($grossMargin)) {
+            continue;
+        }
+
+        /*
+         * 同名業種でグループ化。
+         * 33業種コードも同じはずだが、名称を母集団キーとする。
+         */
         if (!isset($groups[$industryName])) {
-            $groups[$industryName] = [
-                'industry_code' => $industryCode,
-                'values' => [],
-            ];
+            $groups[$industryName] = [];
         }
 
-        $groups[$industryName]['values'][] = $margin;
-        $usedCompanyCount++;
+        $groups[$industryName][] = $grossMargin;
+
+        $companies[] = [
+            'security_code' => $securityCode,
+            'code5' => $code5,
+            'industry_code' => $industryCode,
+            'industry_name' => $industryName,
+            'gross_margin' => $grossMargin,
+        ];
     }
 
-    // 業種コード順。コードが空の場合は業種名順へ。
-    uasort($groups, function (array $a, array $b): int {
-        $ca = (string)($a['industry_code'] ?? '');
-        $cb = (string)($b['industry_code'] ?? '');
+    /*
+     * percentileRank() はソート済み配列を前提とするため、
+     * 業種ごとに一度だけソートする。
+     */
+    foreach ($groups as $industryName => $values) {
+        sort($values, SORT_NUMERIC);
+        $groups[$industryName] = $values;
+    }
 
-        if ($ca === $cb) {
-            return 0;
-        }
-        if ($ca === '') {
-            return 1;
-        }
-        if ($cb === '') {
-            return -1;
+    $rows = [];
+
+    foreach ($companies as $company) {
+        $industryName =
+            (string)$company['industry_name'];
+
+        $values = $groups[$industryName] ?? [];
+
+        if (count($values) === 0) {
+            continue;
         }
 
-        return strcmp($ca, $cb);
-    });
+        $percentileRank = percentileRank(
+            $values,
+            (float)$company['gross_margin']
+        );
 
-    $today = date('Y-m-d');
-    $fileName = '東証33業種別_営業利益率分布_' . date('Ymd') . '.csv';
+        if (!is_finite($percentileRank)) {
+            continue;
+        }
+
+        $score = grossMarginRelativeScore(
+            $percentileRank
+        );
+
+        $rows[] = [
+            'security_code'
+                => (string)$company['security_code'],
+            'score'
+                => $score,
+        ];
+    }
+
+    usort(
+        $rows,
+        static function (array $a, array $b): int {
+            return strcmp(
+                (string)$a['security_code'],
+                (string)$b['security_code']
+            );
+        }
+    );
+
+    $fileName =
+        '四季報登録用_INF_03高付加価値_' .
+        date('Ymd') .
+        '.csv';
 
     header('Content-Type: text/csv; charset=UTF-8');
+
     header(
         'Content-Disposition: attachment; filename*=UTF-8\'\''
         . rawurlencode($fileName)
     );
-    header('Cache-Control: no-store, no-cache, must-revalidate');
+
+    header(
+        'Cache-Control: no-store, no-cache, must-revalidate'
+    );
 
     $fp = fopen('php://output', 'wb');
+
     if ($fp === false) {
-        throw new RuntimeException('CSV出力ストリームを開けませんでした。');
+        throw new RuntimeException(
+            'CSV出力ストリームを開けませんでした。'
+        );
     }
 
-    // Excel向けUTF-8 BOM
-    fwrite($fp, "\xEF\xBB\xBF");
-
-    // 投資分析レポート情報
-    fputcsv($fp, ['投資分析レポート名', REPORTS['industry33_operating_margin_distribution']]);
-    fputcsv($fp, ['出力日', $today]);
-    fputcsv($fp, ['営業利益率', 'OP ÷ Sales × 100']);
-    fputcsv($fp, ['財務データ', 'jquants_fins_summary の銘柄別最新FY実績']);
-    fputcsv($fp, ['集計対象銘柄数', (string)$usedCompanyCount]);
-    fputcsv($fp, []);
-
-    fputcsv($fp, [
-        '33業種コード',
-        '33業種コード名',
-        '銘柄数',
-        '平均(%)',
-        '標準偏差',
-        '最小値(%)',
-        'P10(%)',
-        'P25(%)',
-        '中央値P50(%)',
-        'P75(%)',
-        'P90(%)',
-        '最大値(%)',
-        '営業黒字率(%)',
-        '営業利益率5%以上率(%)',
-        '営業利益率10%以上率(%)',
-        '営業利益率20%以上率(%)',
-    ]);
-
-    foreach ($groups as $industryName => $group) {
-        $values = $group['values'];
-        sort($values, SORT_NUMERIC);
-
-        $n = count($values);
-        if ($n === 0) {
-            continue;
-        }
-
-        $mean = array_sum($values) / $n;
-        $stddev = populationStdDev($values, $mean);
-
-        $positiveCount = countIf($values, function (float $v): bool {
-            return $v > 0.0;
-        });
-        $ge5Count = countIf($values, function (float $v): bool {
-            return $v >= 5.0;
-        });
-        $ge10Count = countIf($values, function (float $v): bool {
-            return $v >= 10.0;
-        });
-        $ge20Count = countIf($values, function (float $v): bool {
-            return $v >= 20.0;
-        });
-
-        fputcsv($fp, [
-            (string)$group['industry_code'],
-            $industryName,
-            (string)$n,
-            fmt($mean),
-            fmt($stddev),
-            fmt($values[0]),
-            fmt(percentile($values, 0.10)),
-            fmt(percentile($values, 0.25)),
-            fmt(percentile($values, 0.50)),
-            fmt(percentile($values, 0.75)),
-            fmt(percentile($values, 0.90)),
-            fmt($values[$n - 1]),
-            fmt(($positiveCount / $n) * 100.0),
-            fmt(($ge5Count / $n) * 100.0),
-            fmt(($ge10Count / $n) * 100.0),
-            fmt(($ge20Count / $n) * 100.0),
-        ]);
+    /*
+     * 四季報Csv項目の登録形式に合わせてヘッダーなし。
+     */
+    foreach ($rows as $row) {
+        fputcsv(
+            $fp,
+            [
+                (string)$row['security_code'],
+                number_format((float)$row['score'], 6, '.', ''),
+            ]
+        );
     }
 
     fclose($fp);
 }
 
+
 /**
- * jquants_fins_summary から銘柄ごとの最新FY実績を取得する。
+ * 粗利率の業種内パーセンタイルを1～10点へ連続変換する。
  *
- * MariaDB 10.3でも動かしやすいよう、ウィンドウ関数には依存せず、
- * Code順・最新順で取得してPHP側で先頭1件を採用する。
+ * P0   = 1点
+ * P25  = 3点
+ * P50  = 5点
+ * P75  = 7.5点
+ * P90  = 9点
+ * P100 = 10点
+ *
+ * P0～P50:
+ *   score = 1 + 4 * percentile / 50
+ *
+ * P50～P100:
+ *   score = 5 + 5 * (percentile - 50) / 50
+ *
+ * これにより5点が業種内中央値P50に一致する。
  */
-function fetchLatestActualFyRows(PDO &$pdo): array
+function grossMarginRelativeScore(
+    float $percentileRank
+): float {
+    $p = max(
+        0.0,
+        min(100.0, $percentileRank)
+    );
+
+    if ($p <= 50.0) {
+        // P0=1 → P50=5
+        $score =
+            1.0 +
+            (4.0 * $p / 50.0);
+    } else {
+        // P50=5 → P100=10
+        $score =
+            5.0 +
+            (5.0 * ($p - 50.0) / 50.0);
+    }
+
+    return max(
+        1.0,
+        min(10.0, $score)
+    );
+}
+
+
+/**
+ * 四季報オンライン Csv項目登録用「INF_04 コスト吸収力」をCSV出力する。
+ *
+ * 定義:
+ * - 最新2FYの実績から売上高増減率と営業利益増減率を算出
+ * - 営業レバレッジ = 営業利益増減率 - 売上高増減率
+ *
+ * スコア:
+ * - 売上高増減率 <= 0: 4点
+ * - 売上高増減率 > 0:
+ *     営業レバレッジ <= -20pt : 1点
+ *     -20pt ～ 0pt            : 1点 → 5点へ線形変換
+ *      0pt ～ +50pt           : 5点 → 10点へ線形変換
+ *     +50pt以上                : 10点
+ *
+ * これにより5点以上は、
+ * 「増収かつ営業利益増加率が売上高増加率以上」を意味する。
+ *
+ * 対象外:
+ * - 比較可能なFY実績が2期未満
+ * - 最新FY / 前FYのSalesまたはOP欠損
+ * - 最新FY / 前FY Sales <= 0
+ * - 前FY OP <= 0
+ *
+ * 前FY OP <= 0 は営業利益増減率の基準値として不適切なため評価対象外。
+ *
+ * CSV仕様:
+ * - ヘッダーなし
+ * - 1列目: 銘柄コード
+ * - 2列目: INF_04スコア（1～10、6桁小数）
+ */
+function downloadShikihoInf04CostAbsorption(): void
+{
+    $pdo = jqBuildPdo();
+    $securityMap = loadSecurityCodeMasterMap();
+    $twoFyMap = fetchLatestTwoActualFyRowsByCode($pdo);
+
+    $rows = [];
+
+    foreach ($securityMap as $code5 => $master) {
+        $securityCode = trim(
+            (string)($master['security_code'] ?? '')
+        );
+
+        if ($securityCode === '') {
+            continue;
+        }
+
+        $fyRows = $twoFyMap[$code5] ?? [];
+
+        if (count($fyRows) < 2) {
+            continue;
+        }
+
+        $latest = $fyRows[0];
+        $previous = $fyRows[1];
+
+        $latestSales = toFloatOrNullLocal(
+            $latest['Sales'] ?? null
+        );
+
+        $previousSales = toFloatOrNullLocal(
+            $previous['Sales'] ?? null
+        );
+
+        $latestOp = toFloatOrNullLocal(
+            $latest['OP'] ?? null
+        );
+
+        $previousOp = toFloatOrNullLocal(
+            $previous['OP'] ?? null
+        );
+
+        if (
+            $latestSales === null ||
+            $previousSales === null ||
+            $latestOp === null ||
+            $previousOp === null ||
+            $latestSales <= 0.0 ||
+            $previousSales <= 0.0 ||
+            $previousOp <= 0.0
+        ) {
+            continue;
+        }
+
+        $salesGrowth =
+            (($latestSales / $previousSales) - 1.0) * 100.0;
+
+        $opGrowth =
+            (($latestOp / $previousOp) - 1.0) * 100.0;
+
+        if (
+            !is_finite($salesGrowth) ||
+            !is_finite($opGrowth)
+        ) {
+            continue;
+        }
+
+        if ($salesGrowth <= 0.0) {
+            $score = 4.0;
+        } else {
+            $operatingLeverage =
+                $opGrowth - $salesGrowth;
+
+            if (!is_finite($operatingLeverage)) {
+                continue;
+            }
+
+            $score = operatingLeverageCostAbsorptionScore(
+                $operatingLeverage
+            );
+        }
+
+        $rows[] = [
+            'security_code' => $securityCode,
+            'score' => $score,
+        ];
+    }
+
+    usort(
+        $rows,
+        static function (array $a, array $b): int {
+            return strcmp(
+                (string)$a['security_code'],
+                (string)$b['security_code']
+            );
+        }
+    );
+
+    $fileName =
+        '四季報登録用_INF_04コスト吸収力_' .
+        date('Ymd') .
+        '.csv';
+
+    header('Content-Type: text/csv; charset=UTF-8');
+
+    header(
+        'Content-Disposition: attachment; filename*=UTF-8\'\''
+        . rawurlencode($fileName)
+    );
+
+    header(
+        'Cache-Control: no-store, no-cache, must-revalidate'
+    );
+
+    $fp = fopen('php://output', 'wb');
+
+    if ($fp === false) {
+        throw new RuntimeException(
+            'CSV出力ストリームを開けませんでした。'
+        );
+    }
+
+    // 四季報Csv項目の登録形式に合わせてヘッダーなし。
+    foreach ($rows as $row) {
+        fputcsv(
+            $fp,
+            [
+                (string)$row['security_code'],
+                number_format(
+                    (float)$row['score'],
+                    6,
+                    '.',
+                    ''
+                ),
+            ]
+        );
+    }
+
+    fclose($fp);
+}
+
+
+/**
+ * 増収企業の営業レバレッジをINF_04の1～10点へ変換する。
+ *
+ * -20pt以下 = 1点
+ * -20pt～0pt = 1点 → 5点
+ * 0pt～50pt = 5点 → 10点
+ * 50pt以上 = 10点
+ */
+function operatingLeverageCostAbsorptionScore(
+    float $operatingLeverage
+): float {
+    if ($operatingLeverage <= -20.0) {
+        return 1.0;
+    }
+
+    if ($operatingLeverage < 0.0) {
+        // -20pt=1 → 0pt=5
+        $score =
+            1.0 +
+            4.0 *
+            (($operatingLeverage + 20.0) / 20.0);
+
+        return max(
+            1.0,
+            min(5.0, $score)
+        );
+    }
+
+    if ($operatingLeverage >= 50.0) {
+        return 10.0;
+    }
+
+    // 0pt=5 → 50pt=10
+    $score =
+        5.0 +
+        5.0 *
+        ($operatingLeverage / 50.0);
+
+    return max(
+        5.0,
+        min(10.0, $score)
+    );
+}
+
+
+/**
+ * jquants_fins_summary から銘柄ごとに異なるCurFYEnの最新2FY実績を返す。
+ *
+ * 同一FYの訂正・再開示が複数ある場合は、
+ * DiscDate / DiscTime / DiscNo が最新の1件だけを採用する。
+ *
+ * Sales / OP の欠損はこの関数では除外しない。
+ */
+function fetchLatestTwoActualFyRowsByCode(PDO &$pdo): array
 {
     jqEnsurePdoAlive($pdo);
 
@@ -281,35 +646,128 @@ function fetchLatestActualFyRows(PDO &$pdo): array
             OP
         FROM jquants_fins_summary
         WHERE CurPerType = 'FY'
-          AND Sales IS NOT NULL
-          AND OP IS NOT NULL
+          AND DocType LIKE 'FYFinancialStatements_%'
         ORDER BY
             Code ASC,
+            CurFYEn DESC,
             DiscDate DESC,
             DiscTime DESC,
             DiscNo DESC
     ";
 
     $stmt = $pdo->query($sql);
+
     if ($stmt === false) {
-        throw new RuntimeException('jquants_fins_summary の取得に失敗しました。');
+        throw new RuntimeException(
+            'jquants_fins_summary の最新2FY取得に失敗しました。'
+        );
     }
 
     $out = [];
-    $seen = [];
+    $seenFy = [];
 
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $code5 = normalizeCode5((string)($row['Code'] ?? ''));
-        if ($code5 === '' || isset($seen[$code5])) {
+        $code5 = normalizeCode5(
+            (string)($row['Code'] ?? '')
+        );
+
+        $fyEnd = trim(
+            (string)($row['CurFYEn'] ?? '')
+        );
+
+        if ($code5 === '' || $fyEnd === '') {
             continue;
         }
 
-        $seen[$code5] = true;
-        $out[] = $row;
+        if (!isset($out[$code5])) {
+            $out[$code5] = [];
+            $seenFy[$code5] = [];
+        }
+
+        if (isset($seenFy[$code5][$fyEnd])) {
+            continue;
+        }
+
+        if (count($out[$code5]) >= 2) {
+            continue;
+        }
+
+        $seenFy[$code5][$fyEnd] = true;
+        $out[$code5][] = $row;
     }
 
     return $out;
 }
+
+
+/**
+ * financial_actuals から銘柄ごとの最新FY preferredレコードを1件返す。
+ */
+function fetchLatestPreferredFinancialActualsMap(PDO &$pdo): array
+{
+    jqEnsurePdoAlive($pdo);
+
+    $sql = "
+        SELECT
+            id,
+            security_code,
+            fiscal_period_end,
+            scope,
+            source,
+            disclosed_at,
+            revenue,
+            gross_profit,
+            status
+        FROM financial_actuals
+        WHERE period_type = 'FY'
+          AND period_basis = 'cumulative'
+          AND status IN ('OK', 'PARTIAL')
+        ORDER BY
+            security_code ASC,
+            fiscal_period_end DESC,
+            CASE source
+                WHEN 'EDINET' THEN 1
+                WHEN 'TDNET'  THEN 2
+                ELSE 9
+            END ASC,
+            COALESCE(disclosed_at, '1000-01-01 00:00:00') DESC,
+            id DESC
+    ";
+
+    $stmt = $pdo->query($sql);
+    if ($stmt === false) {
+        throw new RuntimeException('financial_actuals のpreferred取得に失敗しました。');
+    }
+
+    $out = [];
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $code4 = normalizeCode4FinancialActuals(
+            (string)($row['security_code'] ?? '')
+        );
+
+        if ($code4 === '' || isset($out[$code4])) {
+            continue;
+        }
+
+        $out[$code4] = $row;
+    }
+
+    return $out;
+}
+
+function normalizeCode4FinancialActuals(string $code): string
+{
+    $code = strtoupper(trim($code));
+    $code = preg_replace('/[^0-9A-Z]/', '', $code) ?? '';
+
+    if (strlen($code) === 5 && substr($code, -1) === '0') {
+        return substr($code, 0, 4);
+    }
+
+    return strlen($code) === 4 ? $code : '';
+}
+
 
 /**
  * 証券コードマスタを読み、
@@ -323,6 +781,18 @@ function loadSecurityCodeMasterMap(): array
     }
 
     $header = normalizeHeaderLocal($values[0]);
+
+    $codeIdx = requireHeaderIndexLocal(
+        $header,
+        '証券コード',
+        SECURITY_CODE_MASTER_NAME
+    );
+
+    $companyNameIdx = requireHeaderIndexLocal(
+        $header,
+        '銘柄名',
+        SECURITY_CODE_MASTER_NAME
+    );
 
     $code5Idx = requireHeaderIndexLocal(
         $header,
@@ -367,8 +837,14 @@ function loadSecurityCodeMasterMap(): array
         }
 
         $out[$code5] = [
-            'industry33_code' => trim((string)($row[$industryCodeIdx] ?? '')),
-            'industry33_name' => trim((string)($row[$industryNameIdx] ?? '')),
+            'security_code'
+                => trim((string)($row[$codeIdx] ?? '')),
+            'company_name'
+                => trim((string)($row[$companyNameIdx] ?? '')),
+            'industry33_code'
+                => trim((string)($row[$industryCodeIdx] ?? '')),
+            'industry33_name'
+                => trim((string)($row[$industryNameIdx] ?? '')),
         ];
     }
 
@@ -473,71 +949,56 @@ function findSpreadsheetFileIdByNameLocal(
     return $files[0]->getId();
 }
 
-function percentile(array $sortedValues, float $p): float
-{
+
+/**
+ * ソート済み配列の中でvalueが何パーセンタイルに位置するかを返す。
+ *
+ * 同値が複数ある場合は同順位群の中央順位を採用する。
+ * 戻り値: 0～100
+ */
+function percentileRank(
+    array $sortedValues,
+    float $value
+): float {
     $n = count($sortedValues);
 
     if ($n === 0) {
         return NAN;
     }
+
     if ($n === 1) {
-        return (float)$sortedValues[0];
+        return 50.0;
     }
 
-    // 線形補間: index = (n - 1) * p
-    $index = ($n - 1) * $p;
-    $lower = (int)floor($index);
-    $upper = (int)ceil($index);
+    $below = 0;
+    $equal = 0;
 
-    if ($lower === $upper) {
-        return (float)$sortedValues[$lower];
-    }
+    foreach ($sortedValues as $v) {
+        $v = (float)$v;
 
-    $weight = $index - $lower;
+        if ($v < $value) {
+            $below++;
+            continue;
+        }
 
-    return
-        ((float)$sortedValues[$lower] * (1.0 - $weight)) +
-        ((float)$sortedValues[$upper] * $weight);
-}
-
-function populationStdDev(array $values, float $mean): float
-{
-    $n = count($values);
-    if ($n === 0) {
-        return NAN;
-    }
-
-    $sum = 0.0;
-
-    foreach ($values as $value) {
-        $d = ((float)$value) - $mean;
-        $sum += $d * $d;
-    }
-
-    return sqrt($sum / $n);
-}
-
-function countIf(array $values, callable $fn): int
-{
-    $count = 0;
-
-    foreach ($values as $value) {
-        if ($fn((float)$value)) {
-            $count++;
+        if (abs($v - $value) < 0.0000001) {
+            $equal++;
         }
     }
 
-    return $count;
+    // 同値群の中央順位
+    $rankIndex =
+        $below +
+        (($equal > 0 ? $equal : 1) - 1) / 2.0;
+
+    $percentile = ($rankIndex / ($n - 1)) * 100.0;
+
+    return max(
+        0.0,
+        min(100.0, $percentile)
+    );
 }
 
-function fmt(float $value): string
-{
-    if (!is_finite($value)) {
-        return '';
-    }
-
-    return number_format($value, 2, '.', '');
-}
 
 function toFloatOrNullLocal($value): ?float
 {
