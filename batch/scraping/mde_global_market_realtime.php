@@ -151,11 +151,13 @@ function parse_global_market_realtime_html_($html) {
     }
 
     /*
-     * オルカンは出力対象外とする。
+     * オルカン関連商品は出力対象外とする。
      *
-     * 取得元サイトの名称変更に対応する。
-     *   旧: オルカン eMAXIS Slim
-     *   新: オルカン MAXIS
+     * 現在の取得元サイトには以下の2件が存在する。
+     *   投信 オルカン eMAXIS Slim
+     *   2559 オルカン MAXIS
+     *
+     * 両方とも除外対象とする。
      */
     if (
       mb_strpos(
@@ -399,19 +401,19 @@ function parse_global_market_realtime_html_($html) {
     );
   }
 
-  /*
-   * 除外対象のオルカンは
-   * 1件存在することを前提とする。
-   *
-   * HTML構造変更や名称変更を検知するため、
-   * 0件または複数件の場合は異常終了する。
-   */
-  if ($excludedOrukanCount !== 1) {
-    throw new RuntimeException(
-      "オルカンの除外件数が1件ではありません: " .
-      $excludedOrukanCount
-    );
-  }
+    /*
+     * 除外対象のオルカン関連商品は
+     * 2件存在することを前提とする。
+     *
+     * HTML構造変更や掲載商品の変更を検知するため、
+     * 2件以外の場合は異常終了する。
+     */
+    if ($excludedOrukanCount !== 2) {
+      throw new RuntimeException(
+        "オルカンの除外件数が2件ではありません: " .
+        $excludedOrukanCount
+      );
+    }
 
   if (count($rows) === 0) {
     throw new RuntimeException(

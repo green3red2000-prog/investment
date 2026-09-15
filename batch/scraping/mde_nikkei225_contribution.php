@@ -370,11 +370,34 @@ function normalize_nikkei225_contribution_value_(
   $rankingName
 ) {
   $text = normalize_text_((string)$value);
-  $numericText = str_replace(',', '', $text);
+
+  /*
+   * HTMLでは、
+   *   ▲99.06
+   *   ▼563.98
+   * のように▲/▼で符号が表現される場合がある。
+   *
+   * 従来の+/-表記も引き続き許容する。
+   */
+  $isNegative =
+    strpos($text, '▼') !== false ||
+    strpos($text, '-') !== false;
+
+  $numericText = str_replace(
+    array(
+      ',',
+      '▲',
+      '▼',
+      '+',
+      '-',
+    ),
+    '',
+    $text
+  );
 
   if (
     !preg_match(
-      '/^[+-]?\d+(?:\.\d+)?$/',
+      '/^\d+(?:\.\d+)?$/',
       $numericText
     )
   ) {
@@ -386,6 +409,10 @@ function normalize_nikkei225_contribution_value_(
   }
 
   $number = (float)$numericText;
+
+  if ($isNegative && $number != 0) {
+    $number *= -1;
+  }
 
   if ($number > 0) {
     return '+' . number_format(
