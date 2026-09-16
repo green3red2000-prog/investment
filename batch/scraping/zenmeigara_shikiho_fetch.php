@@ -15,6 +15,16 @@
  * 通常起動:
  *   php /opt/invest/scraping/zenmeigara_shikiho_fetch.php
  *
+ * リトライ起動:
+ *   php /opt/invest/scraping/zenmeigara_shikiho_fetch.php --retry_file=/opt/invest/scraping/tmp/全銘柄四季報情報取得_2026-09-16.csv
+ *     → 指定CSVを読み込み、「実行結果」が「正常」以外の銘柄だけを再取得する
+ *     → 証券コードマスタは読み込まない
+ *     → 出力形式、Driveアップロードは通常起動と同じ
+ *     → 入力CSVと出力CSVが同じパスでも動作可能
+ *       （入力CSVは最初にすべて読み込んで閉じた後、同じパスへ出力するため）
+ *     → ただし、元のCSVはリトライ結果で上書きされるため、
+ *       /opt/invest/scraping/tmp に入力CSVを置く場合は、別ファイル名にしておくことを推奨
+ *
  * テスト起動:
  *   php /opt/invest/scraping/zenmeigara_shikiho_fetch.php --test_code=5563,7203
  * 
@@ -52,6 +62,7 @@ $TMP_DIR = '/opt/invest/scraping/tmp';
 $cliOptions = getopt('', array(
   'test_code:',
   'test_master_file:',
+  'retry_file:',
 ));
 
 $testCodeRaw = isset($cliOptions['test_code'])
@@ -63,8 +74,14 @@ $testMasterFileRaw =
     ? trim((string)$cliOptions['test_master_file'])
     : '';
 
+$retryFileRaw =
+  isset($cliOptions['retry_file'])
+    ? trim((string)$cliOptions['retry_file'])
+    : '';
+
 $testCodes = array();
 $testMasterLimit = null;
+$retryFile = '';
 
 if ($testCodeRaw !== '') {
   foreach (explode(',', $testCodeRaw) as $code) {
@@ -110,18 +127,59 @@ if ($testMasterFileRaw !== '') {
   $testMasterLimit = (int)$testMasterFileRaw;
 }
 
-if (
-  count($testCodes) > 0 &&
-  $testMasterLimit !== null
-) {
+if ($retryFileRaw !== '') {
+  $retryFile = $retryFileRaw;
+
+  if (!is_file($retryFile)) {
+    fwrite(
+      STDERR,
+      "[RETRY][ERROR] --retry_fileで指定されたCSVが見つかりません: {$retryFile}\n"
+    );
+    exit(1);
+  }
+
+  if (!is_readable($retryFile)) {
+    fwrite(
+      STDERR,
+      "[RETRY][ERROR] --retry_fileで指定されたCSVを読み込めません: {$retryFile}\n"
+    );
+    exit(1);
+  }
+
+  if (strtolower(pathinfo($retryFile, PATHINFO_EXTENSION)) !== 'csv') {
+    fwrite(
+      STDERR,
+      "[RETRY][ERROR] --retry_fileにはCSVファイルを指定してください: {$retryFile}\n"
+    );
+    exit(1);
+  }
+}
+
+// --test_code / --test_master_file / --retry_file は同時指定不可
+$modeCount = 0;
+
+if (count($testCodes) > 0) {
+  $modeCount++;
+}
+
+if ($testMasterLimit !== null) {
+  $modeCount++;
+}
+
+if ($retryFile !== '') {
+  $modeCount++;
+}
+
+if ($modeCount > 1) {
   fwrite(
     STDERR,
-    "[TEST][ERROR] --test_codeと--test_master_fileは同時指定できません。\n"
+    "[ERROR] --test_code、--test_master_file、--retry_fileは同時指定できません。\n"
   );
   exit(1);
 }
 
 $isMasterFileTest = ($testMasterLimit !== null);
+$isRetryFileMode = ($retryFile !== '');
 
 $masterTestStartedAt = null;
 
@@ -562,6 +620,113 @@ function find_spreadsheet_file_id_by_name_($drive, $folderId, $fileName) {
   return $files[0]->getId();
 }
 
+/**
+ * --retry_fileで指定されたCSVを読み込み、
+ * 「実行結果」が「正常」以外の証券コードを返す。
+ *
+ * 戻り値:
+ * array(
+ *   array('証券コード' => '7203'),
+ *   array('証券コード' => '6758'),
+ *   ...
+ * )
+ */
+function load_retry_rows_($csvPath) {
+  $fp = fopen($csvPath, 'rb');
+
+  if ($fp === false) {
+    throw new RuntimeException(
+      "リトライCSVを開けません: {$csvPath}"
+    );
+  }
+
+  try {
+    $header = fgetcsv($fp);
+
+    if ($header === false || !is_array($header)) {
+      throw new RuntimeException(
+        "リトライCSVのヘッダを読み込めません: {$csvPath}"
+      );
+    }
+
+    // UTF-8 BOM除去
+    if (isset($header[0])) {
+      $header[0] = preg_replace(
+        '/^\xEF\xBB\xBF/',
+        '',
+        (string)$header[0]
+      );
+    }
+
+    $headerMap = array();
+
+    foreach ($header as $i => $name) {
+      $name = trim((string)$name);
+
+      if ($name !== '') {
+        $headerMap[$name] = $i;
+      }
+    }
+
+    if (!isset($headerMap['証券コード'])) {
+      throw new RuntimeException(
+        'リトライCSVに見出し「証券コード」がありません。'
+      );
+    }
+
+    if (!isset($headerMap['実行結果'])) {
+      throw new RuntimeException(
+        'リトライCSVに見出し「実行結果」がありません。'
+      );
+    }
+
+    $codeIdx = $headerMap['証券コード'];
+    $resultIdx = $headerMap['実行結果'];
+
+    $rows = array();
+    $seenCodes = array();
+
+    while (($csvRow = fgetcsv($fp)) !== false) {
+      if (!is_array($csvRow)) {
+        continue;
+      }
+
+      $code = isset($csvRow[$codeIdx])
+        ? strtoupper(trim((string)$csvRow[$codeIdx]))
+        : '';
+
+      if ($code === '') {
+        continue;
+      }
+
+      $executionResult = isset($csvRow[$resultIdx])
+        ? trim((string)$csvRow[$resultIdx])
+        : '';
+
+      // 正常はリトライしない
+      if ($executionResult === '正常') {
+        continue;
+      }
+
+      // 同じ証券コードが複数あっても1回だけ
+      if (isset($seenCodes[$code])) {
+        continue;
+      }
+
+      $seenCodes[$code] = true;
+
+      $rows[] = array(
+        '証券コード' => $code,
+      );
+    }
+
+    return $rows;
+
+  } finally {
+    fclose($fp);
+  }
+}
+
 // ===== テスト起動 =====
 if (count($testCodes) > 0) {
   try {
@@ -592,44 +757,129 @@ try {
   $drive  = new Google\Service\Drive($client);
   $sheets = new Google\Service\Sheets($client);
 
-  // Drive: folder -> fileId
-  $folderId = resolve_folder_id_by_path_($drive, $FOLDER_MASTER);
-  $fileId = find_spreadsheet_file_id_by_name_($drive, $folderId, $MASTER_FILE_NAME);
-  if ($fileId === null) throw new RuntimeException("マスタスプレッドシートが見つかりません: {$MASTER_FILE_NAME}");
-
-  // Sheet title
-  $sheetTitle = $MASTER_SHEET_NAME_FIXED;
-  if ($sheetTitle === '' || $sheetTitle === null) {
-    $sheetTitle = get_first_sheet_title_($sheets, $fileId);
-  }
-  if ($sheetTitle === '') throw new RuntimeException("マスタのシート名取得に失敗");
-
-  // 1行目（ヘッダ）
-  $headerRange = $sheetTitle . "!A1:ZZ1";
-  $headerRows = sheets_get_values_($sheets, $fileId, $headerRange);
-  $headers = array();
-  if (isset($headerRows[0]) && is_array($headerRows[0])) $headers = $headerRows[0];
-  if (count($headers) === 0) throw new RuntimeException("ヘッダ行が取得できませんでした: {$headerRange}");
-
-  // 列名→index（参照専用）
+  $rows = array();
   $col = array();
-  for ($i=0; $i<count($headers); $i++) {
-    $name = trim((string)$headers[$i]);
-    if ($name !== '') $col[$name] = $i;
-  }
 
-  // 必須列（入力）
-  $needCols = array('証券コード', '市場区分コード');
-  foreach ($needCols as $nc) {
-    if (!isset($col[$nc])) throw new RuntimeException("必須列が見つかりません: {$nc}");
-  }
+  if ($isRetryFileMode) {
+    // --retry_file:
+    // 指定CSVから「実行結果」が「正常」以外の証券コードだけ取得する。
+    // 証券コードマスタは読み込まない。
+    $retryRows = load_retry_rows_($retryFile);
 
-  // データ範囲（2行目以降）
-  $dataRange = $sheetTitle . "!A2:ZZ";
-  $rows = sheets_get_values_($sheets, $fileId, $dataRange);
+    $col = array(
+      '証券コード' => 0,
+    );
+
+    foreach ($retryRows as $retryRow) {
+      $rows[] = array(
+        isset($retryRow['証券コード'])
+          ? (string)$retryRow['証券コード']
+          : '',
+      );
+    }
+
+    echo "[RETRY] File   : {$retryFile}\n";
+    echo "[RETRY] Targets: " . count($rows) . "\n";
+
+    if (count($rows) === 0) {
+      echo "[RETRY] リトライ対象銘柄はありません。\n";
+    }
+
+  } else {
+    // 通常起動 / --test_master_file:
+    // 証券コードマスタを読み込む。
+    $folderId = resolve_folder_id_by_path_(
+      $drive,
+      $FOLDER_MASTER
+    );
+
+    $fileId = find_spreadsheet_file_id_by_name_(
+      $drive,
+      $folderId,
+      $MASTER_FILE_NAME
+    );
+
+    if ($fileId === null) {
+      throw new RuntimeException(
+        "マスタスプレッドシートが見つかりません: {$MASTER_FILE_NAME}"
+      );
+    }
+
+    // Sheet title
+    $sheetTitle = $MASTER_SHEET_NAME_FIXED;
+
+    if ($sheetTitle === '' || $sheetTitle === null) {
+      $sheetTitle = get_first_sheet_title_(
+        $sheets,
+        $fileId
+      );
+    }
+
+    if ($sheetTitle === '') {
+      throw new RuntimeException(
+        'マスタのシート名取得に失敗'
+      );
+    }
+
+    // 1行目（ヘッダ）
+    $headerRange = $sheetTitle . "!A1:ZZ1";
+
+    $headerRows = sheets_get_values_(
+      $sheets,
+      $fileId,
+      $headerRange
+    );
+
+    $headers = array();
+
+    if (
+      isset($headerRows[0]) &&
+      is_array($headerRows[0])
+    ) {
+      $headers = $headerRows[0];
+    }
+
+    if (count($headers) === 0) {
+      throw new RuntimeException(
+        "ヘッダ行が取得できませんでした: {$headerRange}"
+      );
+    }
+
+    // 列名→index（参照専用）
+    for ($i = 0; $i < count($headers); $i++) {
+      $name = trim((string)$headers[$i]);
+
+      if ($name !== '') {
+        $col[$name] = $i;
+      }
+    }
+
+    // 必須列（入力）
+    $needCols = array(
+      '証券コード',
+      '市場区分コード',
+    );
+
+    foreach ($needCols as $nc) {
+      if (!isset($col[$nc])) {
+        throw new RuntimeException(
+          "必須列が見つかりません: {$nc}"
+        );
+      }
+    }
+
+    // データ範囲（2行目以降）
+    $dataRange = $sheetTitle . "!A2:ZZ";
+
+    $rows = sheets_get_values_(
+      $sheets,
+      $fileId,
+      $dataRange
+    );
+  }
 
   // counters
-  $totalTargets = 0;    // 証券コードマスタから読み込んだ銘柄数
+  $totalTargets = 0;    // 処理対象として読み込んだ銘柄数
   $htmlFetchCount = 0;  // 実際にHTML取得へ進んだ銘柄数
   $okCount = 0;         // 正常
   $skipCount = 0;       // 市場区分コード対象外
@@ -690,7 +940,14 @@ try {
         
     $totalTargets++;
 
-    $marketCode = isset($row[$col['市場区分コード']])? trim((string)$row[$col['市場区分コード']]): '';
+    $marketCode = '';
+
+    if (!$isRetryFileMode) {
+      $marketCode =
+        isset($row[$col['市場区分コード']])
+          ? trim((string)$row[$col['市場区分コード']])
+          : '';
+    }
 
     $updateDate = $todayYmd; // yyyy-MM-dd
     $result = '';
@@ -708,7 +965,10 @@ try {
     $proxy = '';
 
     // 対象市場区分コードチェック（111、112、113のみ処理）
-    if (!in_array($marketCode, $TARGET_MARKET_CODES, true)) {
+    if (
+      !$isRetryFileMode &&
+      !in_array($marketCode, $TARGET_MARKET_CODES, true)
+    ) {
       $skipCount++;
       $result = 'スキップ（市場区分コード対象外）';
 
