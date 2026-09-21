@@ -40,6 +40,9 @@ const REPORTS = [
 
     'shikiho_inf04_cost_absorption'
         => '四季報登録用・INF_04コスト吸収力',
+
+    'price_half_recovery_ma75_pullback'
+        => '株価スクリーニング・半値暴落後75日線押し目',
 ];
 
 try {
@@ -81,6 +84,11 @@ function generateReport(string $reportKey): void
 
         case 'shikiho_inf04_cost_absorption':
             downloadShikihoInf04CostAbsorption();
+            return;
+
+
+        case 'price_half_recovery_ma75_pullback':
+            downloadPriceHalfRecoveryMa75Pullback();
             return;
 
 
@@ -1070,6 +1078,549 @@ function requireHeaderIndexLocal(
     }
 
     return (int)$idx;
+}
+
+
+/**
+ * 株価スクリーニング「半値暴落後75日線押し目」をCSV出力する。
+ *
+ * 基準日:
+ * - prices_eod の MAX(asof_date)
+ *
+ * 条件:
+ * 1. A期間（基準日の1年前～6カ月前）の最高値をピークとする。
+ *    B期間（基準日の2年前～1年前未満）の最高値がピーク値を超えない。
+ * 2. ピーク日より後に、安値がピーク値の50%以下となる日がある。
+ * 3. 半値以下初回到達日より後に、終値 > MA25 > MA75 が初めて成立する。
+ * 4. 3の初回成立日から基準日まで MA25 > MA75 を毎日維持し、
+ *    基準日は 終値 >= MA75 かつ MA75乖離率が0～3%。
+ *
+ * MA25 / MA75:
+ * - 当日を含む直近25 / 75営業日の終値単純平均。
+ * - close がNULLの日は判定対象外。
+ *
+ * CSV:
+ * - ヘッダーあり
+ * - Excelで開きやすいようUTF-8 BOM付き
+ */
+function downloadPriceHalfRecoveryMa75Pullback(): void
+{
+    $pdo = jqBuildPdo();
+    $securityMap = loadSecurityCodeMasterMap();
+
+    $stmt = $pdo->query(
+        'SELECT MAX(asof_date) AS base_date FROM prices_eod'
+    );
+    $baseDate = trim((string)($stmt->fetchColumn() ?: ''));
+    $stmt->closeCursor();
+
+    if ($baseDate === '') {
+        throw new RuntimeException('prices_eod に日足データがありません。');
+    }
+
+    $base = new DateTimeImmutable($baseDate);
+    $aStart = $base->modify('-1 year')->format('Y-m-d');
+    $aEnd = $base->modify('-6 months')->format('Y-m-d');
+    $bStart = $base->modify('-2 years')->format('Y-m-d');
+
+    /*
+     * 証券コードマスタは小さいため、先に4桁コードをキーにして保持する。
+     * 日足の非バッファ取得を開始した後は、同じPDO接続で別SQLを実行しない。
+     */
+    $masterByCode4 = [];
+
+    foreach ($securityMap as $master) {
+        $securityCode = trim(
+            (string)($master['security_code'] ?? '')
+        );
+        $code4 = normalizeCode4FinancialActuals($securityCode);
+
+        if ($code4 !== '') {
+            $masterByCode4[$code4] = $master;
+        }
+    }
+
+    /*
+     * 全銘柄×2年分をPHP配列へ一括展開すると128MBを超えるため、
+     * MySQLの結果を非バッファで1行ずつ受け取る。
+     * ORDER BY code, asof_date により、1銘柄分だけをメモリへ保持して
+     * 判定後すぐ破棄する。
+     */
+    $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+
+    $sql = <<<SQL
+SELECT asof_date, code, high, low, close
+FROM prices_eod
+WHERE asof_date BETWEEN :from_date AND :to_date
+ORDER BY code, asof_date
+SQL;
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':from_date' => $bStart,
+        ':to_date' => $baseDate,
+    ]);
+
+    $resultRows = [];
+    $currentCode4 = '';
+    $currentPrices = [];
+
+    /*
+     * 1銘柄分の判定と結果追加を共通化する。
+     * $currentPrices は最大でも約2年分の日足だけなので、
+     * 全銘柄分を保持する場合に比べてメモリ使用量を大幅に抑えられる。
+     */
+    $processCurrent = static function (
+        string $code4,
+        array $prices
+    ) use (
+        &$resultRows,
+        $masterByCode4,
+        $baseDate,
+        $aStart,
+        $aEnd,
+        $bStart
+    ): void {
+        if ($code4 === '' || !isset($masterByCode4[$code4])) {
+            return;
+        }
+
+        $screened = screenHalfRecoveryMa75Pullback(
+            $prices,
+            $baseDate,
+            $aStart,
+            $aEnd,
+            $bStart
+        );
+
+        if ($screened === null) {
+            return;
+        }
+
+        $master = $masterByCode4[$code4];
+
+        $resultRows[] = array_merge(
+            [
+                'security_code' => trim(
+                    (string)($master['security_code'] ?? $code4)
+                ),
+                'company_name' => trim(
+                    (string)($master['company_name'] ?? '')
+                ),
+            ],
+            $screened
+        );
+    };
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $code4 = normalizeCode4FinancialActuals(
+            (string)($row['code'] ?? '')
+        );
+
+        if ($code4 === '') {
+            continue;
+        }
+
+        if ($currentCode4 !== '' && $code4 !== $currentCode4) {
+            $processCurrent($currentCode4, $currentPrices);
+            $currentPrices = [];
+        }
+
+        if ($code4 !== $currentCode4) {
+            $currentCode4 = $code4;
+        }
+
+        /*
+         * マスタに存在しないコードは日足を保持せず読み飛ばす。
+         */
+        if (!isset($masterByCode4[$code4])) {
+            continue;
+        }
+
+        $currentPrices[] = [
+            'date' => (string)$row['asof_date'],
+            'high' => toFloatOrNullLocal($row['high'] ?? null),
+            'low' => toFloatOrNullLocal($row['low'] ?? null),
+            'close' => toFloatOrNullLocal($row['close'] ?? null),
+        ];
+    }
+
+    /* 最後の1銘柄を処理する。 */
+    if ($currentCode4 !== '') {
+        $processCurrent($currentCode4, $currentPrices);
+    }
+
+    $stmt->closeCursor();
+
+    /* 後続処理に備え、PDOのバッファ設定を元へ戻す。 */
+    $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
+
+    usort(
+        $resultRows,
+        static function (array $a, array $b): int {
+            $cmp = ((float)$a['ma75_gap_pct']) <=>
+                ((float)$b['ma75_gap_pct']);
+
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+
+            return strcmp(
+                (string)$a['security_code'],
+                (string)$b['security_code']
+            );
+        }
+    );
+
+    $fileName =
+        '株価スクリーニング_半値暴落後75日線押し目_' .
+        str_replace('-', '', $baseDate) .
+        '.csv';
+
+    header('Content-Type: text/csv; charset=UTF-8');
+    header(
+        'Content-Disposition: attachment; filename*=UTF-8\'\'' .
+        rawurlencode($fileName)
+    );
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+
+    $fp = fopen('php://output', 'wb');
+
+    if ($fp === false) {
+        throw new RuntimeException(
+            'CSV出力ストリームを開けませんでした。'
+        );
+    }
+
+    fwrite($fp, "\xEF\xBB\xBF");
+
+    fputcsv($fp, [
+        '証券コード',
+        '銘柄名',
+        '基準日',
+        '終値',
+        'MA25',
+        'MA75',
+        'MA75乖離率(%)',
+        'ピーク日',
+        'ピーク値',
+        'ピークからの経過日数',
+        '半値以下初回到達日',
+        '半値以下初回到達安値',
+        'ピーク後最安値日',
+        'ピーク後最安値',
+        'ピークからの最大下落率(%)',
+        '終値>MA25>MA75 初回成立日',
+    ]);
+
+    foreach ($resultRows as $row) {
+        fputcsv($fp, [
+            (string)$row['security_code'],
+            (string)$row['company_name'],
+            (string)$row['base_date'],
+            formatPriceReportNumber((float)$row['close']),
+            formatPriceReportNumber((float)$row['ma25']),
+            formatPriceReportNumber((float)$row['ma75']),
+            number_format((float)$row['ma75_gap_pct'], 3, '.', ''),
+            (string)$row['peak_date'],
+            formatPriceReportNumber((float)$row['peak_price']),
+            (string)$row['days_from_peak'],
+            (string)$row['half_date'],
+            formatPriceReportNumber((float)$row['half_low']),
+            (string)$row['post_peak_low_date'],
+            formatPriceReportNumber((float)$row['post_peak_low']),
+            number_format(
+                (float)$row['max_drawdown_pct'],
+                3,
+                '.',
+                ''
+            ),
+            (string)$row['trend_date'],
+        ]);
+    }
+
+    fclose($fp);
+}
+
+/**
+ * 1銘柄分の「半値暴落後75日線押し目」を判定する。
+ */
+function screenHalfRecoveryMa75Pullback(
+    array $prices,
+    string $baseDate,
+    string $aStart,
+    string $aEnd,
+    string $bStart
+): ?array {
+    $count = count($prices);
+
+    if ($count < 75) {
+        return null;
+    }
+
+    /*
+     * 終値のローリング合計からMA25 / MA75を計算する。
+     * NULL終値を含む窓はMAを未計算とする。
+     */
+    $sum25 = 0.0;
+    $sum75 = 0.0;
+    $valid25 = 0;
+    $valid75 = 0;
+
+    for ($i = 0; $i < $count; $i++) {
+        $close = $prices[$i]['close'];
+
+        if ($close !== null) {
+            $sum25 += $close;
+            $sum75 += $close;
+            $valid25++;
+            $valid75++;
+        }
+
+        if ($i >= 25) {
+            $old = $prices[$i - 25]['close'];
+            if ($old !== null) {
+                $sum25 -= $old;
+                $valid25--;
+            }
+        }
+
+        if ($i >= 75) {
+            $old = $prices[$i - 75]['close'];
+            if ($old !== null) {
+                $sum75 -= $old;
+                $valid75--;
+            }
+        }
+
+        $prices[$i]['ma25'] =
+            ($i >= 24 && $valid25 === 25)
+                ? $sum25 / 25.0
+                : null;
+
+        $prices[$i]['ma75'] =
+            ($i >= 74 && $valid75 === 75)
+                ? $sum75 / 75.0
+                : null;
+    }
+
+    /* A期間の最高値。最高値が同値なら、より新しい日をピークとする。 */
+    $peakPrice = null;
+    $peakDate = null;
+    $peakIndex = null;
+
+    /* B期間最高値。 */
+    $bHigh = null;
+
+    foreach ($prices as $i => $row) {
+        $date = (string)$row['date'];
+        $high = $row['high'];
+
+        if ($high === null) {
+            continue;
+        }
+
+        if ($date >= $bStart && $date < $aStart) {
+            if ($bHigh === null || $high > $bHigh) {
+                $bHigh = $high;
+            }
+        }
+
+        if ($date >= $aStart && $date <= $aEnd) {
+            if (
+                $peakPrice === null ||
+                $high > $peakPrice ||
+                ($high == $peakPrice && $date > (string)$peakDate)
+            ) {
+                $peakPrice = $high;
+                $peakDate = $date;
+                $peakIndex = $i;
+            }
+        }
+    }
+
+    if (
+        $peakPrice === null ||
+        $peakPrice <= 0.0 ||
+        $peakDate === null ||
+        $peakIndex === null ||
+        $bHigh === null ||
+        $bHigh > $peakPrice
+    ) {
+        return null;
+    }
+
+    /*
+     * ピーク後について、
+     * - 半値以下の初回到達
+     * - ピーク後最安値
+     * を取得する。
+     */
+    $halfDate = null;
+    $halfLow = null;
+    $halfIndex = null;
+    $postPeakLow = null;
+    $postPeakLowDate = null;
+
+    for ($i = $peakIndex + 1; $i < $count; $i++) {
+        $row = $prices[$i];
+        $date = (string)$row['date'];
+
+        if ($date > $baseDate) {
+            break;
+        }
+
+        $low = $row['low'];
+        if ($low === null) {
+            continue;
+        }
+
+        if ($postPeakLow === null || $low < $postPeakLow) {
+            $postPeakLow = $low;
+            $postPeakLowDate = $date;
+        }
+
+        if (
+            $halfIndex === null &&
+            $low <= $peakPrice * 0.50
+        ) {
+            $halfDate = $date;
+            $halfLow = $low;
+            $halfIndex = $i;
+        }
+    }
+
+    if (
+        $halfIndex === null ||
+        $halfDate === null ||
+        $halfLow === null ||
+        $postPeakLow === null ||
+        $postPeakLowDate === null
+    ) {
+        return null;
+    }
+
+    /* 半値以下初回到達後、最初の「終値 > MA25 > MA75」を探す。 */
+    $trendIndex = null;
+    $trendDate = null;
+
+    for ($i = $halfIndex + 1; $i < $count; $i++) {
+        $row = $prices[$i];
+        $date = (string)$row['date'];
+
+        if ($date > $baseDate) {
+            break;
+        }
+
+        $close = $row['close'];
+        $ma25 = $row['ma25'];
+        $ma75 = $row['ma75'];
+
+        if (
+            $close !== null &&
+            $ma25 !== null &&
+            $ma75 !== null &&
+            $close > $ma25 &&
+            $ma25 > $ma75
+        ) {
+            $trendIndex = $i;
+            $trendDate = $date;
+            break;
+        }
+    }
+
+    if ($trendIndex === null || $trendDate === null) {
+        return null;
+    }
+
+    /* ③成立日から基準日まで MA25 > MA75 を毎日維持する。 */
+    for ($i = $trendIndex; $i < $count; $i++) {
+        $row = $prices[$i];
+        $date = (string)$row['date'];
+
+        if ($date > $baseDate) {
+            break;
+        }
+
+        $ma25 = $row['ma25'];
+        $ma75 = $row['ma75'];
+
+        if (
+            $ma25 === null ||
+            $ma75 === null ||
+            $ma25 <= $ma75
+        ) {
+            return null;
+        }
+    }
+
+    /* 基準日の日足を取得する。 */
+    $last = null;
+
+    for ($i = $count - 1; $i >= 0; $i--) {
+        if ((string)$prices[$i]['date'] === $baseDate) {
+            $last = $prices[$i];
+            break;
+        }
+    }
+
+    if ($last === null) {
+        return null;
+    }
+
+    $close = $last['close'];
+    $ma25 = $last['ma25'];
+    $ma75 = $last['ma75'];
+
+    if (
+        $close === null ||
+        $ma25 === null ||
+        $ma75 === null ||
+        $ma75 <= 0.0 ||
+        $ma25 <= $ma75 ||
+        $close < $ma75
+    ) {
+        return null;
+    }
+
+    $ma75GapPct = (($close - $ma75) / $ma75) * 100.0;
+
+    if ($ma75GapPct < 0.0 || $ma75GapPct > 3.0) {
+        return null;
+    }
+
+    $maxDrawdownPct =
+        (($postPeakLow - $peakPrice) / $peakPrice) * 100.0;
+
+    $peakDt = new DateTimeImmutable($peakDate);
+    $baseDt = new DateTimeImmutable($baseDate);
+    $daysFromPeak = (int)$peakDt->diff($baseDt)->format('%a');
+
+    return [
+        'base_date' => $baseDate,
+        'close' => $close,
+        'ma25' => $ma25,
+        'ma75' => $ma75,
+        'ma75_gap_pct' => $ma75GapPct,
+        'peak_date' => $peakDate,
+        'peak_price' => $peakPrice,
+        'days_from_peak' => $daysFromPeak,
+        'half_date' => $halfDate,
+        'half_low' => $halfLow,
+        'post_peak_low_date' => $postPeakLowDate,
+        'post_peak_low' => $postPeakLow,
+        'max_drawdown_pct' => $maxDrawdownPct,
+        'trend_date' => $trendDate,
+    ];
+}
+
+/**
+ * 株価レポート用の数値表示。
+ * 整数は整数、小数がある場合は不要な末尾0を除去する。
+ */
+function formatPriceReportNumber(float $value): string
+{
+    return rtrim(rtrim(number_format($value, 6, '.', ''), '0'), '.');
 }
 
 function renderIndexPage(): void
