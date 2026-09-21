@@ -53,6 +53,9 @@ const MARKET_CALENDAR_SCRIPT =
 const ZENMEIGARA_HIASHI_SCRIPT =
     '/opt/invest/j_quants/zenmeigara_hiashi_get.php';
 
+const ZENMEIGARA_MARGIN_INTEREST_SCRIPT =
+    '/opt/invest/j_quants/zenmeigara_margin_interest_get.php';
+
 const ZENMEIGARA_BASICINFO_SCRIPT =
     '/opt/invest/j_quants/zenmeigara_basicinfo_get.php';
 
@@ -224,7 +227,21 @@ try {
     );
 
     // --------------------------------------------------------
-    // 7. スクレイピング待ち（000）
+    // 7. J-QuantsAPIで全銘柄信用取引残高取得
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        ZENMEIGARA_MARGIN_INTEREST_SCRIPT
+    );
+
+    runCommand(
+        '7. J-QuantsAPIで全銘柄信用取引残高取得',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 8. スクレイピング待ち（000）
     // --------------------------------------------------------
 
     $snapshotMarkerPath000 = sprintf(
@@ -244,7 +261,7 @@ try {
     );
 
     $snapshotWaitResult000 = runCommand(
-        '7. スクレイピング待ち（000）',
+        '8. スクレイピング待ち（000）',
         $snapshotWaitCommand000,
         $logFile,
         [0, 10]
@@ -262,7 +279,7 @@ try {
     }
 
     // --------------------------------------------------------
-    // 8. スクレイピングデータの反映処理（000）
+    // 9. スクレイピングデータの反映処理（000）
     // --------------------------------------------------------
 
     $command = buildPhpCommand(
@@ -271,13 +288,13 @@ try {
     );
 
     runCommand(
-        '8. スクレイピングデータの反映処理（000）',
+        '9. スクレイピングデータの反映処理（000）',
         $command,
         $logFile
     );
 
     // --------------------------------------------------------
-    // 9. J-QuantsAPIで全銘柄基本情報取得
+    // 10. J-QuantsAPIで全銘柄基本情報取得
     // --------------------------------------------------------
 
     $command = buildPhpCommand(
@@ -285,13 +302,13 @@ try {
     );
 
     runCommand(
-        '9. J-QuantsAPIで全銘柄基本情報取得',
+        '10. J-QuantsAPIで全銘柄基本情報取得',
         $command,
         $logFile
     );
 
     // --------------------------------------------------------
-    // 10. スクレイピング待ち（001）
+    // 11. スクレイピング待ち（001）
     // --------------------------------------------------------
 
     $snapshotMarkerPath001 = sprintf(
@@ -311,14 +328,14 @@ try {
     );
 
     $snapshotWaitResult001 = runCommand(
-        '10. スクレイピング待ち（001）',
+        '11. スクレイピング待ち（001）',
         $snapshotWaitCommand001,
         $logFile,
         [0, 10]
     );
 
     // --------------------------------------------------------
-    // 11. スクレイピングデータの反映処理（001）
+    // 12. スクレイピングデータの反映処理（001）
     // --------------------------------------------------------
 
     if ($snapshotWaitResult001 === 0) {
@@ -328,13 +345,13 @@ try {
         );
 
         runCommand(
-            '11. スクレイピングデータの反映処理（001）',
+            '12. スクレイピングデータの反映処理（001）',
             $command,
             $logFile
         );
     } else {
         logMessage(
-            '11. スクレイピングデータの反映処理（001）をスキップします。' .
+            '12. スクレイピングデータの反映処理（001）をスキップします。' .
             'スクレイピング待ち（001）がoptionalタイムアウトしました。',
             $logFile,
             'WARN'
@@ -342,7 +359,7 @@ try {
     }
 
     // --------------------------------------------------------
-    // 12. 全銘柄日足分析
+    // 13. 全銘柄日足分析
     // --------------------------------------------------------
 
     $command = buildPhpCommand(
@@ -350,7 +367,7 @@ try {
     );
 
     runCommand(
-        '12. 全銘柄日足分析',
+        '13. 全銘柄日足分析',
         $command,
         $logFile
     );
