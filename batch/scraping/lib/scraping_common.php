@@ -2618,7 +2618,10 @@ function upload_csv_as_google_sheet_with_retry_(
       $lastErr = $e;
       $code = (int)$e->getCode();
       $msg  = $e->getMessage();
-      $retryable = ($code === 503 || $code === 429 || stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $retryable = (in_array($code, [429, 500, 502, 503, 504], true) ||
+        stripos($msg, 'timed out') !== false ||
+        stripos($msg, 'timeout') !== false
+      );
       $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
@@ -2690,7 +2693,11 @@ function upload_file_with_retry_(
       $lastErr = $e;
       $code = (int)$e->getCode();
       $msg  = $e->getMessage();
-      $retryable = ($code === 503 || $code === 429 || stripos($msg, 'timed out') !== false || stripos($msg, 'timeout') !== false);
+      $retryable = (
+        in_array($code, [429, 500, 502, 503, 504], true) ||
+        stripos($msg, 'timed out') !== false ||
+        stripos($msg, 'timeout') !== false
+      );
       $lastRetryable = $retryable;
 
       if ($retryable && $try < UPLOAD_RETRY_MAX) {
