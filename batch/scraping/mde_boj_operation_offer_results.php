@@ -302,7 +302,22 @@ function parse_boj_operation_offer_results_xlsx_(
     'allocation_rate' =>
       null,
   );
-
+  /*
+   * 列見出し形式。
+   *
+   * old:
+   *   貸付利率
+   *   利回り(注3)
+   *   応札総額(注4)
+   *   落札総額(注4)
+   *
+   * new:
+   *   貸付利率(注3)
+   *   利回り(注4)
+   *   応札総額(注5)
+   *   落札総額(注5)
+   */
+  $headerFormat = null;
   foreach ($cells as $row => $rowCells) {
     $found =
       array();
@@ -329,16 +344,39 @@ function parse_boj_operation_offer_results_xlsx_(
       } elseif ($label === 'エンド日(注2)') {
         $found['end_date'] =
           (int)$col;
-      } elseif ($label === '貸付利率') {
+      } elseif (
+        $label === '貸付利率' ||
+        $label === '貸付利率(注3)'
+      ) {
         $found['loan_rate'] =
           (int)$col;
-      } elseif ($label === '利回り(注3)') {
+
+        if ($label === '貸付利率(注3)') {
+          $found['header_format'] =
+            'new';
+        } else {
+          $found['header_format'] =
+            'old';
+        }
+
+      } elseif (
+        $label === '利回り(注3)' ||
+        $label === '利回り(注4)'
+      ) {
         $found['yield'] =
           (int)$col;
-      } elseif ($label === '応札総額(注4)') {
+
+      } elseif (
+        $label === '応札総額(注4)' ||
+        $label === '応札総額(注5)'
+      ) {
         $found['competitive_bid'] =
           (int)$col;
-      } elseif ($label === '落札総額(注4)') {
+
+      } elseif (
+        $label === '落札総額(注4)' ||
+        $label === '落札総額(注5)'
+      ) {
         $found['successful_bid'] =
           (int)$col;
       } elseif ($label === '按分レート') {
@@ -369,11 +407,71 @@ function parse_boj_operation_offer_results_xlsx_(
         $found['prorata_rate'],
         $found['non_prorata_rate'],
         $found['average_successful_rate'],
-        $found['allocation_rate']
+        $found['allocation_rate'],
+        $found['header_format']
       )
     ) {
+      /*
+       * 新旧フォーマットの列見出しが
+       * 混在していないことを厳格に確認する。
+       */
+      if ($found['header_format'] === 'old') {
+        $expectedYield =
+          '利回り(注3)';
+        $expectedCompetitiveBid =
+          '応札総額(注4)';
+        $expectedSuccessfulBid =
+          '落札総額(注4)';
+      } elseif ($found['header_format'] === 'new') {
+        $expectedYield =
+          '利回り(注4)';
+        $expectedCompetitiveBid =
+          '応札総額(注5)';
+        $expectedSuccessfulBid =
+          '落札総額(注5)';
+      } else {
+        throw new RuntimeException(
+          "日銀オペレーション・オファー／落札結果の列見出し形式が不正です。"
+        );
+      }
+
+      $actualLabels =
+        array();
+
+      foreach ($rowCells as $col => $value) {
+        if (!is_string($value)) {
+          continue;
+        }
+
+        $actualLabels[(int)$col] =
+          boj_operation_offer_results_normalize_label_(
+            $value
+          );
+      }
+
+      if (
+        !isset(
+          $actualLabels[$found['yield']],
+          $actualLabels[$found['competitive_bid']],
+          $actualLabels[$found['successful_bid']]
+        ) ||
+        $actualLabels[$found['yield']] !==
+          $expectedYield ||
+        $actualLabels[$found['competitive_bid']] !==
+          $expectedCompetitiveBid ||
+        $actualLabels[$found['successful_bid']] !==
+          $expectedSuccessfulBid
+      ) {
+        throw new RuntimeException(
+          "日銀オペレーション・オファー／落札結果の新旧列見出しが混在しています。"
+        );
+      }
+
       $headerRow =
         (int)$row;
+
+      $headerFormat =
+        $found['header_format'];
 
       foreach ($columns as $key => $unused) {
         $columns[$key] =
@@ -552,14 +650,14 @@ function parse_boj_operation_offer_results_xlsx_(
     }
 
     /*
-     * (注1)～(注6) は注記行。
+     * (注1)～(注7) は注記行。
      *
      * 注記行は種類だけを出力し、
      * 他列へ「ー」を出力しない。
      */
     $isNote =
       preg_match(
-        '/^[（(]\s*注\s*[1-6]\s*[）)]/u',
+        '/^[（(]\s*注\s*[1-7]\s*[）)]/u',
         $item
       ) === 1;
 
@@ -771,7 +869,7 @@ function parse_boj_operation_offer_results_xlsx_(
 
     if (
       preg_match(
-        '/^[（(]\s*注\s*([1-6])\s*[）)]/u',
+        '/^[（(]\s*注\s*([1-7])\s*[）)]/u',
         $dataRow['instrument'],
         $noteMatches
       )
@@ -782,9 +880,21 @@ function parse_boj_operation_offer_results_xlsx_(
     }
   }
 
+  if ($headerFormat === 'old') {
+    $requiredNoteCount =
+      6;
+  } elseif ($headerFormat === 'new') {
+    $requiredNoteCount =
+      7;
+  } else {
+    throw new RuntimeException(
+      "日銀オペレーション・オファー／落札結果の列見出し形式を判定できません。"
+    );
+  }
+
   for (
     $noteNo = 1;
-    $noteNo <= 6;
+    $noteNo <= $requiredNoteCount;
     $noteNo++
   ) {
     if (
@@ -805,6 +915,9 @@ function parse_boj_operation_offer_results_xlsx_(
 
       'unit' =>
         $unit,
+
+      'header_format' =>
+        $headerFormat,
 
       'rows' =>
         $rows,
@@ -1402,19 +1515,51 @@ function build_boj_operation_offer_results_message_(
   // 列見出し
   // -------------------------------------------------------
 
-  $lines[] =
-    "種類\t" .
-    "オファー：：オファー額(注1)\t" .
-    "スタート日(注2)\t" .
-    "エンド日(注2)\t" .
-    "貸付利率\t" .
-    "利回り(注3)\t" .
-    "落札結果：：応札総額(注4)\t" .
-    "落札総額(注4)\t" .
-    "按分レート：利回較差(注5)、価格較差(注6)\t" .
-    "全取レート：利回較差(注5)、価格較差(注6)\t" .
-    "平均落札レート：利回較差(注5)、価格較差(注6)\t" .
-    "按分比率";
+  if (
+    !isset($parsed['header_format']) ||
+    !is_string($parsed['header_format'])
+  ) {
+    throw new RuntimeException(
+      "日銀オペレーション・オファー／落札結果の列見出し形式がありません。"
+    );
+  }
+
+  if ($parsed['header_format'] === 'old') {
+    $lines[] =
+      "種類\t" .
+      "オファー：：オファー額(注1)\t" .
+      "スタート日(注2)\t" .
+      "エンド日(注2)\t" .
+      "貸付利率\t" .
+      "利回り(注3)\t" .
+      "落札結果：：応札総額(注4)\t" .
+      "落札総額(注4)\t" .
+      "按分レート：利回較差(注5)、価格較差(注6)\t" .
+      "全取レート：利回較差(注5)、価格較差(注6)\t" .
+      "平均落札レート：利回較差(注5)、価格較差(注6)\t" .
+      "按分比率";
+
+  } elseif ($parsed['header_format'] === 'new') {
+    $lines[] =
+      "種類\t" .
+      "オファー：：オファー額(注1)\t" .
+      "スタート日(注2)\t" .
+      "エンド日(注2)\t" .
+      "貸付利率(注3)\t" .
+      "利回り(注4)\t" .
+      "落札結果：：応札総額(注5)\t" .
+      "落札総額(注5)\t" .
+      "按分レート：利回較差(注6)、価格較差(注7)\t" .
+      "全取レート：利回較差(注6)、価格較差(注7)\t" .
+      "平均落札レート：利回較差(注6)、価格較差(注7)\t" .
+      "按分比率";
+
+  } else {
+    throw new RuntimeException(
+      "日銀オペレーション・オファー／落札結果の列見出し形式が不正です: " .
+      $parsed['header_format']
+    );
+  }
 
   // -------------------------------------------------------
   // データ行
