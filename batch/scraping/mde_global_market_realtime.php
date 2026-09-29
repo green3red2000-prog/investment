@@ -77,9 +77,8 @@ function parse_global_market_realtime_html_($html) {
 
   $processedAt =
     $now->format('Y-m-d H:i');
-
   $rows = array();
-  $excludedOrukanCount = 0;
+  $orukanCount = 0;
 
   foreach ($rowNodes as $rowIndex => $rowNode) {
     $rowNo = $rowIndex + 1;
@@ -151,13 +150,14 @@ function parse_global_market_realtime_html_($html) {
     }
 
     /*
-     * オルカン関連商品は出力対象外とする。
+     * オルカン関連商品を確認する。
      *
      * 現在の取得元サイトには以下の2件が存在する。
      *   投信 オルカン eMAXIS Slim
      *   2559 オルカン MAXIS
      *
-     * 両方とも除外対象とする。
+     * stockHidden の有無にかかわらず存在件数を確認し、
+     * 両方とも出力対象外とする。
      */
     if (
       mb_strpos(
@@ -175,7 +175,26 @@ function parse_global_market_realtime_html_($html) {
         ) !== false
       )
     ) {
-      $excludedOrukanCount++;
+      $orukanCount++;
+      continue;
+    }
+
+    /*
+     * 取得元サイトで非表示となっている行は
+     * データ値が設定されていないため解析対象外とする。
+     *
+     * class="stockHidden" が明示されている行のみ除外し、
+     * 表示対象行については従来どおり厳格に検証する。
+     */
+    $className =
+      (string)$rowNode->getAttribute('class');
+
+    if (
+      preg_match(
+        '/(?:^|\s)stockHidden(?:\s|$)/',
+        $className
+      )
+    ) {
       continue;
     }
 
@@ -408,10 +427,10 @@ function parse_global_market_realtime_html_($html) {
      * HTML構造変更や掲載商品の変更を検知するため、
      * 2件以外の場合は異常終了する。
      */
-    if ($excludedOrukanCount !== 2) {
+    if ($orukanCount !== 2) {
       throw new RuntimeException(
-        "オルカンの除外件数が2件ではありません: " .
-        $excludedOrukanCount
+        "オルカン関連商品の存在件数が2件ではありません: " .
+        $orukanCount
       );
     }
 

@@ -1647,10 +1647,24 @@ const fs = require('fs');
            * 通常値または比較値一式が完成していることを確認する。
            */
           return rows.every(row => {
-            const name =
-              row.querySelector(
-                '[id^="N"]'
-              );
+          /*
+           * 取得元サイトで非表示となっている行は、
+           * 動的データが設定されないため
+           * DOM完成待ちの対象外とする。
+           *
+           * PHP側の解析処理と同じく、
+           * class="stockHidden" が明示されている行のみ除外する。
+           */
+          if (
+            row.classList.contains('stockHidden')
+          ) {
+            return true;
+          }
+
+          const name =
+            row.querySelector(
+              '[id^="N"]'
+            );
 
             if (!name) {
               return false;
