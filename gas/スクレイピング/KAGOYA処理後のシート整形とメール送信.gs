@@ -48,6 +48,7 @@ function postProcess_messages_5minTrigger() {
       '全銘柄信用取引残高取得_メッセージ_',
       '全銘柄日足分析_メッセージ_',
       '大量保有速報_メッセージ_',
+      '分析結果の抽出_メッセージ_',
       'ブロックIP集計_メッセージ_',
       '市況関連データ抽出_ALL_メッセージ_',
       '市況関連データ抽出_GROUP1_メッセージ_',
@@ -337,6 +338,37 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
   }
 
   const { basePrefix, dateStr, sheetName } = parsed;
+
+  // 分析結果の抽出
+  // 複数シートがあるため、シート名変更・フォーマット整形は行わない
+  if (basePrefix === '分析結果の抽出') {
+    const ssName = `${basePrefix}_${dateStr}`;
+    const ssFiles = srcFolder.getFilesByName(ssName);
+
+    if (!ssFiles.hasNext()) {
+      console.log(`スキップ（対応スプレッドシート未発見）: msg=${msgName} / ss=${ssName}`);
+      return;
+    }
+
+    const ssFile = ssFiles.next();
+    const ss = SpreadsheetApp.openById(ssFile.getId());
+
+    // メール送信
+    const bodyText = msgFile.getBlob().getDataAsString('UTF-8');
+    const subject = `${basePrefix}_${dateStr}`;
+    const mailBody = bodyText + '\n\n' + ss.getUrl();
+
+    GmailApp.sendEmail(CONFIG.mailTo, subject, mailBody);
+
+    // 「基本情報付加」フォルダへコピー
+    ssFile.makeCopy(ssName, dstFolder);
+
+    // 対象のメッセージファイル削除
+    msgFile.setTrashed(true);
+
+    console.log(`完了: ${msgName}`);
+    return;
+  }
 
   // ブロックIP集計はスプレッドシートを使用せず、
   // メッセージTXTの内容だけをメール送信する

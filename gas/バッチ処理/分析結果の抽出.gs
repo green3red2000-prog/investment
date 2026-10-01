@@ -12,7 +12,7 @@
  *   分析結果の抽出を実行しない。
  * (2) 分析結果の抽出_yyyy-MM-dd を出力結果フォルダに作成し、
  *     指定シートを作成して抽出結果を書き出す。
- * (3) メール送信
+ * (3) メッセージファイルの出力
  */
 
 const CONFIG = {
@@ -35,9 +35,6 @@ const CONFIG = {
   // (2) 抽出 起動判定（ファイル名）
   propLastZenFileNameForExtract: 'LAST_ZEN_FILENAME_FOR_EXTRACT',
   propLastKessanFileNameForExtract: 'LAST_KESSAN_FILENAME_FOR_EXTRACT',
-
-  // Email
-  mailTo: 'green3red2000@gmail.com',
 };
 
 // ★ 見出し略称（作成完了後に表示だけ置換）
@@ -95,7 +92,6 @@ function run_extract_and_mail_impl_(opt) {
 
   const tz = CONFIG.timeZone;
   const todayStr = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
-  const todayMailStr = Utilities.formatDate(new Date(), tz, 'yyyy/MM/dd');
 
   // (1) 処理対象ファイルの検出
   const outputFolder = getFolderByPath_(CONFIG.outputFolderPath);
@@ -217,20 +213,30 @@ function run_extract_and_mail_impl_(opt) {
     props.setProperty(CONFIG.propLastKessanFileNameForExtract, latestKessan.name);
   }
 
-  // (3) メール送信
+  // (3) メッセージファイルの出力
   if (extractDone) {
-    const subject = `分析結果の抽出：${todayMailStr}`;
-    const body =
-`本日の分析結果の抽出を終了しました。
-処理対象のファイルは以下でした。
+    const messageFileName =
+      `分析結果の抽出_メッセージ_${todayStr}.txt`;
 
-全銘柄日足分析：${latestAnalysis.name}
-決算速報：${latestKessan.name}
+    const message =
+  `本日の分析結果の抽出を終了しました。
+  処理対象のファイルは以下でした。
 
-抽出結果は以下です。
-${ssOut ? ssOut.getUrl() : ''}
-`;
-    MailApp.sendEmail(CONFIG.mailTo, subject, body);
+  全銘柄日足分析：${latestAnalysis.name}
+  決算速報：${latestKessan.name}
+  `;
+
+    // 同名ファイルが存在する場合は削除
+    const files = outputFolder.getFilesByName(messageFileName);
+    while (files.hasNext()) {
+      files.next().setTrashed(true);
+    }
+
+    outputFolder.createFile(
+      messageFileName,
+      message,
+      MimeType.PLAIN_TEXT
+    );
   }
 
   console.log('完了');
@@ -276,16 +282,8 @@ function buildExtractionSheets_(args) {
       }
     }
 
-    // ★ 見出し固定：シートごとに列固定指定（無ければ従来通り行のみ）
-    formatHeaderRow_(sh, spec.headers.length, spec.freezeCols);
-
     // ★ 共通フォーマット適用（存在する列のみ）
     applyCommonFormats_(sh, spec.headers);
-
-    // ★ 追加：条件に該当するセルを薄い赤色に
-    if (spec.alerts && spec.alerts.length > 0) {
-      applyAlertCellColors_(sh, spec.headers, spec.alerts);
-    }
 
     // ★ シート作成完了後：見出し文言を略称へ（表示だけ）
     rewriteHeaderAliases_(sh, HEADER_ALIASES);
@@ -413,6 +411,27 @@ function extractRows_(sourceSheet, spec, masterCtx) {
     });
 
     rows.push(outRow);
+  }
+
+  // ★ ランキング系シート：指定列で並び替えて上位N件だけ残す
+  if (spec.limit && spec.limitHeader) {
+    const sortIndex = spec.headers.indexOf(spec.limitHeader);
+
+    if (sortIndex >= 0) {
+      rows.sort((a, b) => {
+        const av = getNumber_(a[sortIndex]);
+        const bv = getNumber_(b[sortIndex]);
+
+        return spec.limitAscending
+          ? av - bv
+          : bv - av;
+      });
+
+      return {
+        rows: rows.slice(0, spec.limit),
+        sort: spec.sort
+      };
+    }
   }
 
   return { rows, sort: spec.sort };
@@ -576,14 +595,11 @@ function getExtractionSpecs_() {
     {
       sheetName: '中小型順張りスイング',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
-        '証券コード','会社名','(96)AI基準判定','MIX係数','利回り','(97)タイプ分類','(104)パーフェクトオーダー判定','(84)連続日数',
-        '(51)終値5日移動平均と終値の移動平均乖離率','(53)終値22日移動平均と終値の移動平均乖離率','(56)終値132日移動平均と終値の移動平均乖離率',
-        '(86)10日間上昇率','(90)10日間下落率','(101)直近22日間の値幅不安定率','(103)直近132日間の値幅不安定率',
-        '信用倍率','(98)信用買い残日数',
-        '業種','概要','株探','四季','銘偵','時価総額','上場区分','PER','PBR','終値','前日比','騰落率','出来高',
-        '売上高','経常益','最終益','信用日付','信用売り残','信用買い残'      ],
+        '証券コード','会社名','(96)AI基準判定','MIX係数',
+        '(101)直近22日間の値幅不安定率',
+        '(103)直近132日間の値幅不安定率'
+      ],
       filterFn: ({row, getNum, col}) => {
         const ai = col.iAi96 !== null ? getNum(row[col.iAi96]) : NaN;
         if (!(isFinite(ai) && ai >= 8)) return false;
@@ -621,14 +637,10 @@ function getExtractionSpecs_() {
     {
       sheetName: '大型順張りスイング',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
-        '証券コード','会社名','(96)AI基準判定','MIX係数','利回り','(97)タイプ分類','(104)パーフェクトオーダー判定','(84)連続日数',
-        '(51)終値5日移動平均と終値の移動平均乖離率','(53)終値22日移動平均と終値の移動平均乖離率','(56)終値132日移動平均と終値の移動平均乖離率',
-        '(86)10日間上昇率','(90)10日間下落率','(101)直近22日間の値幅不安定率','(103)直近132日間の値幅不安定率',
-        '信用倍率','(98)信用買い残日数',
-        '業種','概要','株探','四季','銘偵','時価総額','上場区分','PER','PBR','終値','前日比','騰落率','出来高',
-        '売上高','経常益','最終益','信用日付','信用売り残','信用買い残'
+        '証券コード','会社名','(96)AI基準判定','MIX係数',
+        '(101)直近22日間の値幅不安定率',
+        '(103)直近132日間の値幅不安定率'
       ],
       filterFn: ({row, getNum, col}) => {
         const ai = col.iAi96 !== null ? getNum(row[col.iAi96]) : NaN;
@@ -667,19 +679,10 @@ function getExtractionSpecs_() {
     {
       sheetName: '低ボラ異常増量スイング',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
-        '証券コード','会社名','(92)低ボラ出来高増','(96)AI基準判定','(97)タイプ分類',
-        '(101)直近22日間の値幅不安定率','(103)直近132日間の値幅不安定率','(104)パーフェクトオーダー判定',
-        '信用倍率','(98)信用買い残日数',
-        '(84)連続日数',
-        '(51)終値5日移動平均と終値の移動平均乖離率','(53)終値22日移動平均と終値の移動平均乖離率','(56)終値132日移動平均と終値の移動平均乖離率',
-        '(86)10日間上昇率','(90)10日間下落率',
-        '(41)直近5日間の高値-安値の値幅のボラティリティ','(42)直近10日間の高値-安値の値幅のボラティリティ',
-        '業種','概要','株探','四季','銘偵',
-        '時価総額','上場区分','PER','PBR','利回り','終値','前日比','騰落率','出来高',
-        '売上高','経常益','最終益','信用日付','信用売り残','信用買い残',
-        '(72)β','(73)相関','(74)相対ボラ','(75)残差ボラ','(76)アップサイドβ','(77)ダウンサイドβ','(78)Up Capture','(79)Down Capture'
+        '証券コード','会社名','(92)低ボラ出来高増',
+        '(101)直近22日間の値幅不安定率',
+        '(103)直近132日間の値幅不安定率'
       ],
       filterFn: ({row, getNum, col}) => {
         const lv = col.iLowVolInc !== null ? getNum(row[col.iLowVolInc]) : NaN;
@@ -708,15 +711,16 @@ function getExtractionSpecs_() {
     {
       sheetName: 'ロングショート',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
         '証券コード','会社名','売買判定',
-        '(72)β','(73)相関','(74)相対ボラ','(75)残差ボラ','(76)アップサイドβ','(77)ダウンサイドβ','(78)Up Capture','(79)Down Capture',
-        '(80)RSI','(81)RSIの直近22日間の回帰係数','(97)タイプ分類','(104)パーフェクトオーダー判定',
-        '業種','概要','株探','四季','銘偵',
-        '(51)終値5日移動平均と終値の移動平均乖離率','(53)終値22日移動平均と終値の移動平均乖離率','(56)終値132日移動平均と終値の移動平均乖離率','(86)10日間上昇率','(90)10日間下落率',
-        '信用倍率','(98)信用買い残日数','(96)AI基準判定','(101)直近22日間の値幅不安定率','(103)直近132日間の値幅不安定率','(84)連続日数','(82)MACD','(83)MACDの直近22日間の回帰係数',
-        '時価総額','上場区分','PER','PBR','利回り','終値','前日比','騰落率','出来高','売上高','経常益','最終益','信用日付','信用売り残','信用買い残'
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値',
+        '(51)終値5日移動平均と終値の移動平均乖離率',
+        '(53)終値22日移動平均と終値の移動平均乖離率',
+        '(56)終値132日移動平均と終値の移動平均乖離率'
       ],
       filterFn: ({row, getNum, col}) => {
         const mcap = col.iMcap !== null ? getNum(row[col.iMcap]) : NaN;
@@ -768,14 +772,9 @@ function getExtractionSpecs_() {
     {
       sheetName: '良決算低判定',
       sourceType: 'kessan',
-      freezeCols: 2,
       headers: [
-        '日付','時刻','証券コード','会社名','速報内容','分類','業種','概要','株探','四季','銘偵',
-        '(96)AI基準判定','(97)タイプ分類','(101)直近22日間の値幅不安定率','(103)直近132日間の値幅不安定率','(104)パーフェクトオーダー判定','信用倍率','(98)信用買い残日数',
-        '(84)連続日数','(51)終値5日移動平均と終値の移動平均乖離率','(53)終値22日移動平均と終値の移動平均乖離率','(56)終値132日移動平均と終値の移動平均乖離率','(86)10日間上昇率','(90)10日間下落率',
-        '(80)RSI','(81)RSIの直近22日間の回帰係数','(82)MACD','(83)MACDの直近22日間の回帰係数',
-        '時価総額','上場区分','PER','PBR','利回り','終値','前日比','騰落率','出来高','売上高','経常益','最終益','信用日付','信用売り残','信用買い残',
-        '(72)β','(73)相関','(74)相対ボラ','(75)残差ボラ','(76)アップサイドβ','(77)ダウンサイドβ','(78)Up Capture','(79)Down Capture'
+        '日付','時刻','証券コード','会社名','速報内容','分類',
+        '(96)AI基準判定','(97)タイプ分類'
       ],
       filterFn: ({row, getNum, col}) => {
         const cls = col.iClass !== null ? String(row[col.iClass] ?? '').trim() : '';
@@ -788,13 +787,6 @@ function getExtractionSpecs_() {
       },
       sort: null,
 
-      // ★ 追加：条件に該当するセルを薄赤に（列単位）
-      alerts: [
-        { header: 'PER', fn: (n) => n >= 16.0 },
-        { header: 'PBR', fn: (n) => n >= 1.0 },
-        { header: '利回り', fn: (n) => n <= 1.0 },
-        { header: '信用倍率', fn: (n) => n >= 1.0 },
-      ],
     },
 
     // =========================
@@ -803,18 +795,13 @@ function getExtractionSpecs_() {
     {
       sheetName: '連続日数',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
-        '証券コード','会社名',
-        '(84)連続日数','(96)AI基準判定','(97)タイプ分類','(104)パーフェクトオーダー判定',
-        '業種','概要','株探','四季','銘偵',
-        '(51)終値5日移動平均と終値の移動平均乖離率',
-        '(53)終値22日移動平均と終値の移動平均乖離率',
-        '(55)終値66日移動平均と終値の移動平均乖離率',
-        '信用倍率','(98)信用買い残日数',
-        '(80)RSI','(128)週足RSI','(130)ストキャスティクス%K','(132)週足ストキャスティクス%K','(138)ボリンジャーバンドのσ値',
-        '(86)10日間上昇率','(90)10日間下落率','(101)直近22日間の値幅不安定率',
-        '時価総額','上場区分','PER','PBR','利回り','終値','出来高','売上高','経常益','最終益','信用日付','信用売り残','信用買い残'
+        '証券コード','会社名','(84)連続日数',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
       ],
       filterFn: ({row, getNum, col, idx}) => {
         const iStreak = idx('(84)連続日数');
@@ -823,12 +810,6 @@ function getExtractionSpecs_() {
         return (streak >= 7 || streak <= -7);
       },
       sort: [{ header: '(84)連続日数', ascending: false }],
-      alerts: [
-        { header: 'PER', fn: (n) => n >= 16.0 },
-        { header: 'PBR', fn: (n) => n >= 1.0 },
-        { header: '利回り', fn: (n) => n <= 1.0 },
-        { header: '信用倍率', fn: (n) => n >= 1.0 },
-      ],
     },
 
     // =========================
@@ -837,18 +818,16 @@ function getExtractionSpecs_() {
     {
       sheetName: 'オシレーター',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
         '証券コード','会社名',
-        '(80)RSI','(128)週足RSI','(130)ストキャスティクス%K','(132)週足ストキャスティクス%K','(138)ボリンジャーバンドのσ値',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値',
         '(51)終値5日移動平均と終値の移動平均乖離率',
         '(53)終値22日移動平均と終値の移動平均乖離率',
-        '(55)終値66日移動平均と終値の移動平均乖離率',
-        '業種','概要','株探','四季','銘偵',
-        '(96)AI基準判定','(97)タイプ分類','(104)パーフェクトオーダー判定','(84)連続日数',
-        '信用倍率','(98)信用買い残日数',
-        '(86)10日間上昇率','(90)10日間下落率','(101)直近22日間の値幅不安定率',
-        '時価総額','上場区分','PER','PBR','利回り','終値','出来高','売上高','経常益','最終益','信用日付','信用売り残','信用買い残'
+        '(55)終値66日移動平均と終値の移動平均乖離率'
       ],
       filterFn: ({row, getNum, idx}) => {
         const rsi   = toNumOrNaN_(row, idx, '(80)RSI', getNum);
@@ -865,12 +844,6 @@ function getExtractionSpecs_() {
         return (over || under);
       },
       sort: [{ header: '(80)RSI', ascending: false }],
-      alerts: [
-        { header: 'PER', fn: (n) => n >= 16.0 },
-        { header: 'PBR', fn: (n) => n >= 1.0 },
-        { header: '利回り', fn: (n) => n <= 1.0 },
-        { header: '信用倍率', fn: (n) => n >= 1.0 },
-      ],
     },
 
     // =========================
@@ -879,38 +852,170 @@ function getExtractionSpecs_() {
     {
       sheetName: 'タイプ分類',
       sourceType: 'analysis',
-      freezeCols: 2,
       headers: [
         '証券コード','会社名',
-        '(97)タイプ分類','(96)AI基準判定','(104)パーフェクトオーダー判定','(84)連続日数',
-        '業種','概要','株探','四季','銘偵',
-        '(51)終値5日移動平均と終値の移動平均乖離率',
-        '(53)終値22日移動平均と終値の移動平均乖離率',
-        '(55)終値66日移動平均と終値の移動平均乖離率',
-        '信用倍率','(98)信用買い残日数',
-        '(80)RSI','(128)週足RSI','(130)ストキャスティクス%K','(132)週足ストキャスティクス%K','(138)ボリンジャーバンドのσ値',
-        '(86)10日間上昇率','(90)10日間下落率','(101)直近22日間の値幅不安定率',
-        '時価総額','上場区分','PER','PBR','利回り','終値','出来高','売上高','経常益','最終益','信用日付','信用売り残','信用買い残'
+        '(97)タイプ分類',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
       ],
       filterFn: ({row, idx}) => {
         const iType = idx('(97)タイプ分類');
         const t = (iType !== null) ? String(row[iType] ?? '').trim() : '';
         return [
-          '危険物',
-          '只のハイボラ危険株',
-          '統計拒否',
           '攻撃的順張り',
-          '市場の写像',
           '非対称アルファ',
         ].includes(t);
       },
       sort: [{ header: '(97)タイプ分類', ascending: false }],
-      alerts: [
-        { header: 'PER', fn: (n) => n >= 16.0 },
-        { header: 'PBR', fn: (n) => n >= 1.0 },
-        { header: '利回り', fn: (n) => n <= 1.0 },
-        { header: '信用倍率', fn: (n) => n >= 1.0 },
+    },
+      
+    // =========================
+    // ★ 新規：高PER
+    // =========================
+    {
+      sheetName: '高PER',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','PER',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
       ],
+      filterFn: ({row, getNum, col}) => {
+        const per = col.iPer !== null ? getNum(row[col.iPer]) : NaN;
+        return isFinite(per) && per > 0 && per <= 200;
+      },
+      limit: 30,
+      limitHeader: 'PER',
+      limitAscending: false,
+      sort: [{ header: 'PER', ascending: false }],
+    },
+
+    // =========================
+    // ★ 新規：低PER
+    // =========================
+    {
+      sheetName: '低PER',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','PER',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, col}) => {
+        const per = col.iPer !== null ? getNum(row[col.iPer]) : NaN;
+        return isFinite(per) && per > 0;
+      },
+      limit: 30,
+      limitHeader: 'PER',
+      limitAscending: true,
+      sort: [{ header: 'PER', ascending: true }],
+    },
+
+    // =========================
+    // ★ 新規：高PBR
+    // =========================
+    {
+      sheetName: '高PBR',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','PBR',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, col}) => {
+        const pbr = col.iPbr !== null ? getNum(row[col.iPbr]) : NaN;
+        return isFinite(pbr) && pbr > 0;
+      },
+      limit: 30,
+      limitHeader: 'PBR',
+      limitAscending: false,
+      sort: [{ header: 'PBR', ascending: false }],
+    },
+
+    // =========================
+    // ★ 新規：低PBR
+    // =========================
+    {
+      sheetName: '低PBR',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','PBR',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, col}) => {
+        const pbr = col.iPbr !== null ? getNum(row[col.iPbr]) : NaN;
+        return isFinite(pbr) && pbr > 0;
+      },
+      limit: 30,
+      limitHeader: 'PBR',
+      limitAscending: true,
+      sort: [{ header: 'PBR', ascending: true }],
+    },
+
+    // =========================
+    // ★ 新規：22日間上昇率
+    // =========================
+    {
+      sheetName: '22日間上昇率',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','(88)22日間上昇率',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, idx}) => {
+        const i = idx('(88)22日間上昇率');
+        const n = i !== null ? getNum(row[i]) : NaN;
+        return isFinite(n);
+      },
+      limit: 30,
+      limitHeader: '(88)22日間上昇率',
+      limitAscending: false,
+      sort: [{ header: '(88)22日間上昇率', ascending: false }],
+    },
+
+    // =========================
+    // ★ 新規：22日間下落率
+    // =========================
+    {
+      sheetName: '22日間下落率',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','(91)22日間下落率',
+        '(80)RSI',
+        '(128)週足RSI',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, idx}) => {
+        const i = idx('(91)22日間下落率');
+        const n = i !== null ? getNum(row[i]) : NaN;
+        return isFinite(n) && n > -100;
+      },
+      limit: 30,
+      limitHeader: '(91)22日間下落率',
+      limitAscending: true,
+      sort: [{ header: '(91)22日間下落率', ascending: true }],
     },
   ];
 }
@@ -1027,17 +1132,6 @@ function getHeaderMap_(sheet) {
   return { headers, map };
 }
 
-function formatHeaderRow_(sheet, width, freezeCols) {
-   if (width <= 0) return;
-   sheet.setFrozenRows(1);
-  // ★ 列固定（例：B列まで固定 → 2）
-  if (freezeCols && freezeCols > 0) {
-    sheet.setFrozenColumns(freezeCols);
-  } else {
-    sheet.setFrozenColumns(0);
-  }
-  sheet.getRange(1, 1, 1, width).setBackground('#FFA500');
-}
 
 function getNumber_(v) {
   if (v === null || v === undefined) return NaN;
@@ -1070,36 +1164,6 @@ function rewriteHeaderAliases_(sheet, aliasMap) {
   const headers = rng.getValues()[0].map(v => String(v ?? '').trim());
   const replaced = headers.map(h => aliasMap[h] ?? h);
   rng.setValues([replaced]);
-}
-
-// ★ 条件に該当するセルだけ薄い赤色にする（列単位）
-function applyAlertCellColors_(sheet, headers, alerts) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-
-  const headerToCol = new Map();
-  headers.forEach((h, i) => headerToCol.set(h, i + 1));
-
-  const LIGHT_RED = '#f4cccc';
-
-  alerts.forEach(rule => {
-    const col = headerToCol.get(rule.header);
-    if (!col) return;
-
-    const rng = sheet.getRange(2, col, lastRow - 1, 1);
-    const vals = rng.getValues(); // 2D
-    const bgs = rng.getBackgrounds();
-
-    for (let r = 0; r < vals.length; r++) {
-      const v = vals[r][0];
-      const n = getNumber_(v);
-      if (!isFinite(n)) continue;
-      if (rule.fn(n)) {
-        bgs[r][0] = LIGHT_RED;
-      }
-    }
-    rng.setBackgrounds(bgs);
-  });
 }
 
 // ★ idx() + getNum を安全に使うための小物

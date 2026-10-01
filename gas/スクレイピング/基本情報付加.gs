@@ -15,6 +15,7 @@
  * - 本日の株価動向   : startCol=10, companyNameCol=3, codeCol=2, bottomLineCol=1
  * - PTS＆朝刊ニュース : startCol=11, companyNameCol=3, codeCol=2, bottomLineCol=1
  * - 全銘柄日足分析   : startCol=0,  companyNameCol=2, codeCol=1
+ * - 分析結果の抽出   : startCol=0,  companyNameCol=2, codeCol=1
  */
 
 function main() {
@@ -51,8 +52,9 @@ function main() {
     const isHonjitsu = name.startsWith('本日の株価動向');
     const isPtsNews  = name.startsWith('PTS＆朝刊ニュース');
     const isZenMei   = name.startsWith('全銘柄日足分析');
+    const isAnalysisExtract = name.startsWith('分析結果の抽出');
 
-    if (!isKessan && !isTekiji && !isTairyo && !isHonjitsu && !isPtsNews && !isZenMei) {
+    if (!isKessan && !isTekiji && !isTairyo && !isHonjitsu && !isPtsNews && !isZenMei && !isAnalysisExtract) {
       Logger.log(`スキップ: 想定外のファイル名: "${name}"`);
       continue;
     }
@@ -118,6 +120,16 @@ function main() {
       args.sheetName = '';      // 全シート対象
       args.kabutanLinkType = 2; // 株探リンク＝チャート
       args.headerPattern = 1;
+
+    } else if (isAnalysisExtract) {
+      // 分析結果の抽出
+      args.startCol = 0;        // シート右端の次列
+      args.companyNameCol = 2;  // B
+      args.codeCol = 1;         // A
+      args.sheetName = '';      // 全シート対象
+      args.kabutanLinkType = 2; // 株探リンク＝チャート
+      args.headerPattern = 0;
+      args.freezeRows = 1;
     }
 
     Logger.log(`処理開始: "${name}" (prefix=${
@@ -126,7 +138,8 @@ function main() {
       isTairyo ? '大量保有速報' :
       isHonjitsu ? '本日の株価動向' :
       isPtsNews ? 'PTS＆朝刊ニュース' :
-      '全銘柄日足分析'
+      isZenMei ? '全銘柄日足分析' :
+      '分析結果の抽出'
     }, writeLimit=${args.writeLimit})`);
 
     // ライブラリ実行
