@@ -21,7 +21,6 @@ declare(strict_types=1);
  *
  * 自動リカバリ:
  * - 直近14営業日: APIに存在しDBに無いDateだけを欠損補完
- * - DB直近5レコード: 各DateをAPIへ問い合わせ、保存内容に差異があれば全件洗替
  */
 
 require __DIR__ . '/conf/config.php';
@@ -183,54 +182,7 @@ try {
           echo "[RECOVER] code={$code4} missing dates added=" . count($missingRows) . "\n";
         }
 
-        // ---------------------------------------------------------
-        // B. DB直近5レコードの内容チェック
-        // ---------------------------------------------------------
-        // DBに実在する直近5レコードについて、そのDateを指定してAPIから取得し、
-        // 全保存項目を照合する。
-        //
-        // ・同日APIデータが無い       → 異常として全件洗替
-        // ・保存値とAPI値に差異あり   → 全件洗替
-        //
-        // これにより旧週次データ（2026-09-24以前）でも、
-        // 「営業日なのにAPIデータが無い」ことを誤って異常判定しない。
-        jqEnsurePdoAlive($pdo);
-        $dbLast5 = fetchLastNMarginFromDb($pdo, $dbCode, 5);
-
-        $needFullReplace = false;
-
-        if (count($dbLast5) !== 5) {
-          $needFullReplace = true;
-        } else {
-          foreach ($dbLast5 as $d => $dbRow) {
-            $webRow = fetchMarginRowForCodeDate($apiCode, $dbCode, $d);
-
-            if ($webRow === null || !sameMarginRow($webRow, $dbRow)) {
-              $needFullReplace = true;
-              break;
-            }
-          }
-        }
-
-        if ($needFullReplace) {
-          $from = tenYearsAgoSameDay($todayISO);
-          $rows = fetchRowsForCodeFrom($apiCode, $dbCode, $from);
-          assertNoDuplicateDates($rows);
-          if (count($rows) === 0) {
-            throw new RuntimeException('JQUANTS_ERROR: 全件洗替の取得が0件（削除中止）');
-          }
-
-          deleteMarginByCodeWithReconnect($pdo, $dbCode);
-          $upsertTargetTotal += count($rows);
-          $upsertedTotal += bulkUpsertMarginWithReconnect($pdo, $rows);
-
-          $countReplace++;
-          $statusRows[] = [$code4, $todayISO, '全件洗替：' . count($rows) . '件', maxDataDate($rows) ?? ''];
-          continue;
-        }
-
-        // 欠損補完後、API側に存在するDB最新日より新しいデータも追加する。
-        // 通常は上記Aで包含されるが、処理意図を明確にするため件数をまとめて結果表示する。
+        // 直近14営業日の欠損補完結果を記録する。
         $countDiff++;
         $statusRows[] = [
           $code4,
@@ -411,28 +363,6 @@ function fetchLatestMapFromDb(PDO $pdo): array {
   return $map;
 }
 
-function fetchLastNMarginFromDb(PDO $pdo, string $code, int $n): array {
-  $sql = "SELECT
-            data_date, pub_date, code, iss_type,
-            shrt_vol, long_vol, shrt_neg_vol, long_neg_vol, shrt_std_vol, long_std_vol,
-            shrt_val, long_val, shrt_neg_val, long_neg_val, shrt_std_val, long_std_val
-          FROM margin_interest
-          WHERE code = :code
-          ORDER BY data_date DESC
-          LIMIT {$n}";
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute([':code' => $code]);
-  $rows = $stmt->fetchAll();
-
-  $map = [];
-  foreach ($rows as $r) {
-    $d = (string)($r['data_date'] ?? '');
-    if ($d === '') continue;
-    $map[$d] = $r;
-  }
-  return $map;
-}
-
 function fetchExistingMarginDatesFromDb(PDO $pdo, string $code, array $dates): array {
   if (count($dates) === 0) return [];
 
@@ -459,46 +389,6 @@ function fetchExistingMarginDatesFromDb(PDO $pdo, string $code, array $dates): a
     if ($d !== '') $map[$d] = true;
   }
   return $map;
-}
-
-function fetchMarginRowForCodeDate(string $apiCode4, string $dbCode4, string $dateISO): ?array {
-  $rows = fetchJQuantsMarginInterest([
-    'code' => $apiCode4,
-    'date' => str_replace('-', '', $dateISO),
-  ]);
-
-  foreach ($rows as $row) {
-    if (!is_array($row)) continue;
-
-    $norm = normalizeMarginRow($row, $dbCode4);
-    if ($norm === null) continue;
-
-    if (($norm['data_date'] ?? null) === $dateISO) {
-      return $norm;
-    }
-  }
-
-  return null;
-}
-
-function sameMarginRow(array $a, array $b): bool {
-  $fields = [
-    'pub_date', 'iss_type',
-    'shrt_vol', 'long_vol', 'shrt_neg_vol', 'long_neg_vol', 'shrt_std_vol', 'long_std_vol',
-    'shrt_val', 'long_val', 'shrt_neg_val', 'long_neg_val', 'shrt_std_val', 'long_std_val',
-  ];
-
-  foreach ($fields as $f) {
-    $av = $a[$f] ?? null;
-    $bv = $b[$f] ?? null;
-
-    if ($f === 'pub_date') {
-      if (normalizeNullableString($av) !== normalizeNullableString($bv)) return false;
-    } else {
-      if (compareNullableNumber($av, $bv) !== 0) return false;
-    }
-  }
-  return true;
 }
 
 function deleteMarginByCode(PDO $pdo, string $code): void {
@@ -864,11 +754,6 @@ function normalizeNullableDate($v): ?string {
   return normalizeYMD((string)$v);
 }
 
-function normalizeNullableString($v): ?string {
-  if ($v === null || $v === '') return null;
-  return (string)$v;
-}
-
 function assertNoDuplicateDates(array $rows): void {
   $seen = [];
   foreach ($rows as $r) {
@@ -898,13 +783,3 @@ function toNullableInt($v): ?int {
   return (int)$v;
 }
 
-function compareNullableNumber($a, $b): int {
-  if (($a === null || $a === '') && ($b === null || $b === '')) return 0;
-  if ($a === null || $a === '' || $b === null || $b === '') return -1;
-
-  $fa = (float)$a;
-  $fb = (float)$b;
-
-  if (abs($fa - $fb) < 0.000001) return 0;
-  return ($fa < $fb) ? -1 : 1;
-}
