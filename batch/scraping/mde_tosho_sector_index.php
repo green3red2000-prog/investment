@@ -172,24 +172,32 @@ function parse_tosho_sector_index_html_($html) {
      * 現在のページでは、
      * 直近営業日の騰落方向を以下のclassで表している。
      *
-     * COL_P3：上昇
-     * COL_M3：下落
-     * COL_Z3：上昇・下落なし
+     * 新仕様:
+     *   gyo-pos：上昇
+     *   gyo-neg：下落
+     *   day2のみ：上昇・下落なし
+     *
+     * 旧仕様:
+     *   COL_P3：上昇
+     *   COL_M3：下落
+     *   COL_Z3：上昇・下落なし
      */
     if (
       preg_match(
-        '/(?:^|\s)COL_P3(?:\s|$)/',
+        '/(?:^|\s)(?:gyo-pos|COL_P3)(?:\s|$)/',
         $class
       )
     ) {
       $direction = '上昇';
+
     } elseif (
       preg_match(
-        '/(?:^|\s)COL_M3(?:\s|$)/',
+        '/(?:^|\s)(?:gyo-neg|COL_M3)(?:\s|$)/',
         $class
       )
     ) {
       $direction = '下落';
+
     } elseif (
       preg_match(
         '/(?:^|\s)COL_Z3(?:\s|$)/',
@@ -197,6 +205,24 @@ function parse_tosho_sector_index_html_($html) {
       )
     ) {
       $direction = 'ー';
+
+    } elseif (
+      preg_match(
+        '/(?:^|\s)day2(?:\s|$)/',
+        $class
+      )
+    ) {
+      /*
+       * 新仕様では上昇・下落なしの場合、
+       * gyo-pos / gyo-neg のどちらも付与されない。
+       *
+       * continuousCells 自体が
+       * td.day2 のみを取得しているため、
+       * ここでは day2 のみ残ったセルを
+       * 上昇・下落なしとして扱う。
+       */
+      $direction = 'ー';
+
     } else {
       /*
        * 過去の保存済みHTMLとの互換性のため、
@@ -207,6 +233,7 @@ function parse_tosho_sector_index_html_($html) {
         strpos($style, 'rgb(255, 68, 68)') !== false
       ) {
         $direction = '下落';
+
       } elseif (
         strpos($style, '#11cc11') !== false ||
         strpos($style, 'rgb(17, 204, 17)') !== false
@@ -233,10 +260,30 @@ function parse_tosho_sector_index_html_($html) {
         $days = '0';
       }
     }
-
-    if ($days !== '' && !preg_match('/^\d+$/', $days)) {
+    
+    /*
+     * 騰落方向を判定できない場合は、
+     * 取得元サイトの仕様変更の可能性があるため
+     * 空欄のまま処理を継続せず異常終了する。
+     */
+    if ($direction === '') {
       throw new RuntimeException(
-        "連続日数が数値ではありません: {$sector}={$days}"
+        "業種別連続値の騰落方向を判定できません: " .
+        "sector={$sector}" .
+        " class={$class}" .
+        " style={$style}"
+      );
+    }
+
+    if (
+      $days === '' ||
+      !preg_match('/^\d+$/', $days)
+    ) {
+      throw new RuntimeException(
+        "連続日数が数値ではありません: " .
+        "sector={$sector}" .
+        " days={$days}" .
+        " direction={$direction}"
       );
     }
 
