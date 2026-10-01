@@ -32,7 +32,17 @@ data/kabutan/daily_market_snapshot/*
 data/kabutan/basicinfo/*
 
 # 個別銘柄情報収集ツール
-PowerShell/tools/StockResearch/*
-!PowerShell/tools/StockResearch/stock_research_snapshot.ps1
+PowerShell/tools/StockResearch/調査企業リスト.txt
+!PowerShell/tools/StockResearch/stock_research_snapshot.bat
 !PowerShell/tools/StockResearch/TR_証券コード_連番3桁.txt
 !PowerShell/tools/StockResearch/AIプロンプト.txt
+PowerShell/tools/StockResearch/resources/*
+PowerShell/tools/StockResearch/result/*
+PowerShell/tools/StockResearch/state/*
+PowerShell/tools/StockResearch/tools/*
+PowerShell/tools/StockResearch/バックアップ/*
+PowerShell/tools/StockResearch/source/*
+!PowerShell/tools/StockResearch/source/stock_research_ai_prepare.ps1
+!PowerShell/tools/StockResearch/source/stock_research_chatgpt.js
+!PowerShell/tools/StockResearch/source/stock_research_chatgpt.ps1
+!PowerShell/tools/StockResearch/source/stock_research_snapshot_.ps1
