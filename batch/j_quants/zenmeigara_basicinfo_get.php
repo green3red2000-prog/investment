@@ -56,7 +56,7 @@ const CSV_DASH = '－';
 const DATA_HEADERS = [
   '証券コード','更新日','実行結果','会社名略称','会社名','業種','概要',
   '時価総額','上場区分','売上高','経常益','最終益','PER','PBR','利回り','終値','前日比','騰落率',
-  '出来高','信用日付','信用売り残','信用買い残','信用倍率'
+  '出来高','信用日付','信用売り残','信用買い残','信用倍率','信用買残比','信用売残比'
 ];
 
 const FINS_DB_COLUMNS = [
@@ -148,7 +148,7 @@ try {
        ' prev bar rows=' . count($prevBarRows) .
        ' prev_codes=' . count($prevBarsByCode) . "\n";
 
-  // 4. 信用取引週末残高の取得
+  // 4. 信用取引残高の取得
   [$marginRows, $marginDateISO] = fetchRecentMarginInterestRows($calendarRows, $currentBizISO, 30);
   $marginByCode = buildMarginByCode($marginRows);
   echo '[INFO] margin date=' . ($marginDateISO ?? '') .
@@ -380,6 +380,28 @@ try {
           $row['信用倍率'] = CSV_DASH;
         } else {
           $row['信用倍率'] = $longVol / $shortVol;
+        }
+
+        // 信用買残比・信用売残比
+        // ＝ 信用残株数 ÷（期末発行済株式数－期末自己株式数）×100
+        if ($shOut !== null) {
+          $effectiveShares = $shOut - ($trSh ?? 0.0);
+
+          if ($effectiveShares > 0) {
+            $row['信用買残比'] = $longVol !== null
+              ? ($longVol / $effectiveShares) * 100.0
+              : CSV_DASH;
+
+            $row['信用売残比'] = $shortVol !== null
+              ? ($shortVol / $effectiveShares) * 100.0
+              : CSV_DASH;
+          } else {
+            $row['信用買残比'] = CSV_DASH;
+            $row['信用売残比'] = CSV_DASH;
+          }
+        } else {
+          $row['信用買残比'] = CSV_DASH;
+          $row['信用売残比'] = CSV_DASH;
         }
       }
 
@@ -1221,7 +1243,7 @@ function enforceOutputFormats(array &$row): void {
     $row[$key] = toFixed1Number($row[$key]);
   }
 
-  foreach (['PBR','終値','前日比','騰落率','利回り'] as $key) {
+    foreach (['PBR','終値','前日比','騰落率','利回り','信用買残比','信用売残比'] as $key) {
     if (!isset($row[$key]) || $row[$key] === '') continue;
     if (isDashValue($row[$key])) {
       $row[$key] = CSV_DASH;
@@ -1271,11 +1293,11 @@ function applyDashByWarningsAndType(array &$row, array $warnings, array $master)
   }
 
   if ($hasWarning('信用残J-Quants登録なし')) {
-    setDashValues($row, ['信用日付','信用売り残','信用買い残','信用倍率']);
+    setDashValues($row, ['信用日付','信用売り残','信用買い残','信用倍率','信用買残比','信用売残比']);
   }
 
   if (!empty($master['is_index'])) {
-    setDashValues($row, ['時価総額','売上高','経常益','最終益','PER','PBR','利回り','信用日付','信用売り残','信用買い残','信用倍率']);
+    setDashValues($row, ['時価総額','売上高','経常益','最終益','PER','PBR','利回り','信用日付','信用売り残','信用買い残','信用倍率','信用買残比','信用売残比']);
     if (!isset($row['出来高']) || $row['出来高'] === '') {
       $row['出来高'] = CSV_DASH;
     }
