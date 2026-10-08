@@ -515,6 +515,7 @@ function applyCommonFormats_(sheet, headers) {
   // ★ 小数2位固定
   [
     '利回り','MIX係数',
+    '信用買残比','信用売残比',
     '(98)信用買い残日数',
     '(72)β','(73)相関','(74)相対ボラ','(75)残差ボラ',
     '(76)アップサイドβ','(77)ダウンサイドβ'
@@ -1017,6 +1018,57 @@ function getExtractionSpecs_() {
       limitAscending: true,
       sort: [{ header: '(91)22日間下落率', ascending: true }],
     },
+
+    // =========================
+    // ★ 新規：信用買残比
+    // =========================
+    {
+      sheetName: '信用買残比',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','信用買残比',
+        '(98)信用買い残日数',
+        '信用倍率',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, idx}) => {
+        const i = idx('信用買残比');
+        const n = i !== null ? getNum(row[i]) : NaN;
+        return isFinite(n) && n >= 0;
+      },
+      limit: 30,
+      limitHeader: '信用買残比',
+      limitAscending: false,
+      sort: [{ header: '信用買残比', ascending: false }],
+    },
+
+    // =========================
+    // ★ 新規：信用売残比
+    // =========================
+    {
+      sheetName: '信用売残比',
+      sourceType: 'analysis',
+      headers: [
+        '証券コード','会社名','信用売残比',
+        '(98)信用買い残日数',
+        '信用倍率',
+        '(130)ストキャスティクス%K',
+        '(132)週足ストキャスティクス%K',
+        '(138)ボリンジャーバンドのσ値'
+      ],
+      filterFn: ({row, getNum, idx}) => {
+        const i = idx('信用売残比');
+        const n = i !== null ? getNum(row[i]) : NaN;
+        return isFinite(n) && n >= 0;
+      },
+      limit: 30,
+      limitHeader: '信用売残比',
+      limitAscending: false,
+      sort: [{ header: '信用売残比', ascending: false }],
+    },  
+      
   ];
 }
 
