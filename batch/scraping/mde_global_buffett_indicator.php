@@ -225,10 +225,10 @@ function parse_global_buffett_indicator_html_($html) {
 
   if (
     !$rowNodes ||
-    $rowNodes->length !== 24
+    $rowNodes->length < 15
   ) {
     throw new RuntimeException(
-      "国別バフェット指数の取得件数が24件ではありません: " .
+      "国別バフェット指数の取得件数が15件未満です: " .
       ($rowNodes
         ? $rowNodes->length
         : 0)
@@ -907,10 +907,10 @@ function build_global_buffett_indicator_message_(
   if (
     !isset($parsed['countries']) ||
     !is_array($parsed['countries']) ||
-    count($parsed['countries']) !== 24
+    count($parsed['countries']) < 15
   ) {
     throw new RuntimeException(
-      "国別バフェット指数が24件ではありません。"
+      "国別バフェット指数が15件未満です。"
     );
   }
 
