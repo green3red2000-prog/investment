@@ -49,6 +49,7 @@ function postProcess_messages_5minTrigger() {
       '全銘柄日足分析_メッセージ_',
       '大量保有速報_メッセージ_',
       '分析結果の抽出_メッセージ_',
+      '類似チャートパターン検索_メッセージ_',
       'ブロックIP集計_メッセージ_',
       '市況関連データ抽出_ALL_メッセージ_',
       '市況関連データ抽出_GROUP1_メッセージ_',
@@ -339,9 +340,12 @@ function processOneMessageFile_(msgFile, srcFolder, dstFolder, CONFIG) {
 
   const { basePrefix, dateStr, sheetName } = parsed;
 
-  // 分析結果の抽出
+  // 分析結果の抽出・類似チャートパターン検索
   // 複数シートがあるため、シート名変更・フォーマット整形は行わない
-  if (basePrefix === '分析結果の抽出') {
+  if (
+    basePrefix === '分析結果の抽出' ||
+    basePrefix === '類似チャートパターン検索'
+  ) {
     const ssName = `${basePrefix}_${dateStr}`;
     const ssFiles = srcFolder.getFilesByName(ssName);
 

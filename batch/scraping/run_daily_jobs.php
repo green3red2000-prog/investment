@@ -62,6 +62,9 @@ const ZENMEIGARA_BASICINFO_SCRIPT =
 const ZENMEIGARA_ANALYSIS_SCRIPT =
     '/opt/invest/sheets-php/run_zenmeigara_analysis.php';
 
+const SIMILAR_CHART_PATTERN_SCRIPT =
+    '/opt/invest/sheets-php/similar_chart_pattern.php';
+
 // ============================================================
 // 初期化
 // ============================================================
@@ -368,6 +371,20 @@ try {
 
     runCommand(
         '13. 全銘柄日足分析',
+        $command,
+        $logFile
+    );
+
+    // --------------------------------------------------------
+    // 14. 類似チャートパターン検索
+    // --------------------------------------------------------
+
+    $command = buildPhpCommand(
+        SIMILAR_CHART_PATTERN_SCRIPT
+    );
+
+    runCommand(
+        '14. 類似チャートパターン検索',
         $command,
         $logFile
     );

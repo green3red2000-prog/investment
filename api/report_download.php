@@ -8,7 +8,7 @@ declare(strict_types=1);
  * PHP 7.4.30
  *
  * - プルダウンで投資分析レポートを選択
- * - 「出力」でCSVを直接ダウンロード
+ * - 「出力」でCSVを直接ダウンロード（類似チャートパターン検索のみXLSX）
  * - 投資分析レポート追加時は REPORTS と対応する生成関数を追加する
  *
  * 現在の投資分析レポート:
@@ -43,6 +43,9 @@ const REPORTS = [
 
     'price_half_recovery_ma75_pullback'
         => '株価スクリーニング・半値暴落後75日線押し目',
+
+    'similar_chart_pattern'
+        => '類似チャートパターン検索',
 ];
 
 try {
@@ -91,6 +94,10 @@ function generateReport(string $reportKey): void
             downloadPriceHalfRecoveryMa75Pullback();
             return;
 
+
+        case 'similar_chart_pattern':
+            downloadSimilarChartPattern();
+            return;
 
         default:
             throw new RuntimeException("未実装の投資分析レポートです: {$reportKey}");
@@ -1677,6 +1684,7 @@ h1{
 }
 form{
     display:flex;
+    flex-wrap:wrap;
     gap:10px;
     align-items:center;
 }
@@ -1704,9 +1712,15 @@ button{
     <form method="get" action="{$self}">
         <input type="hidden" name="mode" value="download">
 
-        <select name="report" required>
+        <select name="report" id="report" required onchange="togglePatternFields()">
             {$options}
         </select>
+
+        <div id="pattern-fields" style="display:none;gap:8px;flex-wrap:wrap">
+            <label>証券コード <input name="security_code" type="text" pattern="[0-9A-Za-z]{4}" maxlength="4" placeholder="285A" disabled></label>
+            <label>始点日 <input name="start_date" type="text" placeholder="YYYY-MM-DD" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" disabled></label>
+            <label>終点日 <input name="end_date" type="text" placeholder="YYYY-MM-DD" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" disabled></label>
+        </div>
 
         <button type="submit">出力</button>
     </form>
@@ -1715,6 +1729,18 @@ button{
         投資分析レポートを選択して「出力」を押すとCSVをダウンロードします。
     </div>
 </div>
+<script>
+function togglePatternFields() {
+    const active = document.getElementById('report').value === 'similar_chart_pattern';
+    const fields = document.getElementById('pattern-fields');
+    fields.style.display = active ? 'flex' : 'none';
+    fields.querySelectorAll('input').forEach(function(input) {
+        input.disabled = !active;
+        input.required = active;
+    });
+}
+togglePatternFields();
+</script>
 </body>
 </html>
 HTML;
@@ -1770,4 +1796,365 @@ pre{
 </body>
 </html>
 HTML;
+}
+
+
+/**
+ * 類似チャートパターン検索：基準期間と直近N本のローソク足を比較。
+ * Cは参考値。ランキングはA^0.8 * B^0.2で決定する。
+ */
+function downloadSimilarChartPattern(): void
+{
+    $code = strtoupper(trim((string)($_GET['security_code'] ?? '')));
+    $start = trim((string)($_GET['start_date'] ?? ''));
+    $end = trim((string)($_GET['end_date'] ?? ''));
+    if (!preg_match('/^[0-9A-Z]{4}$/D', $code)) {
+        throw new RuntimeException('証券コードは英数字4桁で指定してください。');
+    }
+    foreach ([$start, $end] as $date) {
+        $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        if (!$dt || $dt->format('Y-m-d') !== $date) {
+            throw new RuntimeException('日付はYYYY-MM-DD形式で指定してください。');
+        }
+    }
+    if ($start > $end) throw new RuntimeException('始点日は終点日以前にしてください。');
+    if ((new DateTimeImmutable($start))->diff(new DateTimeImmutable($end))->days > 365) {
+        throw new RuntimeException('比較期間は365日以内にしてください。');
+    }
+
+    $masters = loadSecurityCodeMasterMap();
+    $byCode = [];
+    foreach ($masters as $master) {
+        $c = strtoupper(trim((string)($master['security_code'] ?? '')));
+        if (preg_match('/^[0-9A-Z]{4}$/D', $c)) $byCode[$c] = $master;
+    }
+    if (!isset($byCode[$code])) throw new RuntimeException('基準銘柄が証券コードマスタに存在しません。');
+
+    $pdo = jqBuildPdo();
+    $baseStmt = $pdo->prepare('SELECT asof_date, `open`, high, low, `close`, volume FROM prices_eod WHERE code = :code AND asof_date BETWEEN :start AND :end ORDER BY asof_date');
+    $baseStmt->execute([':code'=>$code, ':start'=>$start, ':end'=>$end]);
+    $baseRows = $baseStmt->fetchAll(PDO::FETCH_ASSOC);
+    $baseStmt->closeCursor();
+    $n = count($baseRows);
+    if ($n < 3) throw new RuntimeException('基準銘柄の日足が3本未満です。');
+    $baseA = patternPriceVector($baseRows);
+    $baseB = patternVolumeVector($baseRows);
+    if ($baseA === null || $baseB === null) throw new RuntimeException('基準銘柄の4本値または出来高に欠損があります。');
+
+    $latest = (string)$pdo->query('SELECT MAX(asof_date) FROM prices_eod')->fetchColumn();
+    if ($latest === '') throw new RuntimeException('prices_eodに最新日がありません。');
+    // 最大N本分をカバーする暦日幅を確保（長期休場・上場停止は対象外）。
+    $lookbackDays = max(90, $n * 4);
+    $from = (new DateTimeImmutable($latest))->modify('-' . $lookbackDays . ' days')->format('Y-m-d');
+    $results = [];
+    $currentCode = '';
+    $rows = [];
+    $evaluate = static function (string $c, array $data) use (&$results, $byCode, $n, $latest, $baseA, $baseB): void {
+        if (!isset($byCode[$c]) || count($data) < $n) return;
+        $window = array_slice($data, -$n);
+        // 全銘柄で同じ最新日を終点にする（更新遅れ銘柄を除外）。
+        if ((string)$window[$n-1]['asof_date'] !== $latest) return;
+        $aVec = patternPriceVector($window);
+        $bVec = patternVolumeVector($window);
+        if ($aVec === null || $bVec === null) return;
+        $a = patternWeightedPriceSimilarity($baseA, $aVec);
+        $b = patternSimilarity($baseB, $bVec);
+        $d = pow($a, 0.8) * pow($b, 0.2);
+        $results[] = [$c, (string)$byCode[$c]['company_name'], $d, $a, $b, null];
+    };
+
+    // 非バッファ取得。全銘柄の全期間をPHP配列に積まない。
+    $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+    try {
+        $stmt = $pdo->prepare('SELECT code, asof_date, `open`, high, low, `close`, volume FROM prices_eod WHERE asof_date BETWEEN :start AND :end ORDER BY code, asof_date');
+        $stmt->execute([':start'=>$from, ':end'=>$latest]);
+        while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $c = normalizeCode4FinancialActuals((string)$r['code']);
+            if ($c !== $currentCode) {
+                if ($currentCode !== '') $evaluate($currentCode, $rows);
+                $currentCode = $c;
+                $rows = [];
+            }
+            if (!isset($byCode[$c])) continue;
+            $rows[] = $r;
+            if (count($rows) > $n) array_shift($rows);
+        }
+        if ($currentCode !== '') $evaluate($currentCode, $rows);
+        $stmt->closeCursor();
+    } finally {
+        $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
+    }
+
+    usort($results, static function (array $x, array $y): int {
+        return ($y[2] <=> $x[2]) ?: strcmp($x[0], $y[0]);
+    });
+    $results = array_slice($results, 0, 100);
+
+    // Cは上位100社だけ算出し、ランキングには使用しない。
+    // 旧週次と新日次の混在を、各ローソク足の日付以前の最新残高で補完する。
+    $marginStmt = $pdo->prepare('SELECT data_date, shrt_std_vol, long_std_vol FROM margin_interest WHERE code = :code AND data_date BETWEEN :start AND :end ORDER BY data_date');
+    $baseMargin = patternMarginAligned($marginStmt, $code, $baseRows);
+    // 上位100銘柄についてのみ直近N本を再取得する。
+    // 全銘柄のローソク足をresultsに保持しないことで128MB制限に対応。
+    $topPriceStmt = $pdo->prepare(
+        'SELECT asof_date FROM prices_eod WHERE code = :code AND asof_date <= :end ORDER BY asof_date DESC LIMIT ' . (int)$n
+    );
+    foreach ($results as &$result) {
+        $topPriceStmt->execute([':code' => $result[0], ':end' => $latest]);
+        $topRows = $topPriceStmt->fetchAll(PDO::FETCH_ASSOC);
+        $topPriceStmt->closeCursor();
+        if (count($topRows) !== $n) {
+            $result[5] = null;
+            continue;
+        }
+        $topRows = array_reverse($topRows);
+        $result[5] = patternMarginScore(
+            $baseMargin,
+            patternMarginAligned($marginStmt, $result[0], $topRows)
+        );
+    }
+    unset($result);
+
+    downloadSimilarChartXlsx($results, $code, $start, $end, $n);
+
+}
+
+
+/**
+ * 類似チャート検索結果をExcel XLSX形式で返す。
+ * ZipArchiveを使ってOffice Open XMLを直接作成するため、追加ライブラリ不要。
+ */
+function downloadSimilarChartXlsx(array $results, string $code, string $start, string $end, int $n): void
+{
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException('XLSX出力にはPHPのZipArchive拡張が必要です。');
+    }
+    $tmp = tempnam(sys_get_temp_dir(), 'similar_chart_');
+    if ($tmp === false) throw new RuntimeException('一時ファイルを作成できません。');
+    $zip = new ZipArchive();
+    $zipOpen = false;
+    try {
+        if ($zip->open($tmp, ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('XLSXのZIPファイルを作成できません。');
+        }
+        $zipOpen = true;
+        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            . '<Default Extension="xml" ContentType="application/xml"/>'
+            . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            . '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            . '</Types>');
+        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            . '</Relationships>');
+        $zip->addFromString('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            . '<sheets><sheet name="類似チャートパターン検索" sheetId="1" r:id="rId1"/></sheets></workbook>');
+        $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            . '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            . '</Relationships>');
+        $zip->addFromString('xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            . '<fonts count="3"><font><sz val="11"/><name val="Meiryo"/></font>'
+            . '<font><b/><sz val="11"/><name val="Meiryo"/></font>'
+            . '<font><u/><color rgb="FF0563C1"/><sz val="11"/><name val="Meiryo"/></font></fonts>'
+            . '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+            . '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            . '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            . '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            . '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>'
+            . '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/>'
+            . '<xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+            . '</styleSheet>');
+
+        $esc = static function (string $v): string {
+            return htmlspecialchars($v, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        };
+        $strCell = static function (string $col, int $row, string $value, int $style = 0) use ($esc): string {
+            return '<c r="' . $col . $row . '" s="' . $style . '" t="inlineStr"><is><t>' . $esc($value) . '</t></is></c>';
+        };
+        $headers = ['証券コード','会社名','D.類似加重幾何平均値','A.4本足','B.出来高','C.信用残','株探','四季','銘偵','全銘'];
+        $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            . '<dimension ref="A1:J' . (count($results) + 1) . '"/>'
+            . '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+            . '<cols><col min="1" max="1" width="15" customWidth="1"/><col min="2" max="2" width="30" customWidth="1"/>'
+            . '<col min="3" max="6" width="23" customWidth="1"/><col min="7" max="10" width="10" customWidth="1"/></cols><sheetData><row r="1">';
+        foreach ($headers as $i => $header) {
+            $xml .= $strCell(chr(65 + $i), 1, $header, 1);
+        }
+        $xml .= '</row>';
+        $links = '';
+        $rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+        $relId = 1;
+        foreach ($results as $index => $r) {
+            $row = $index + 2;
+            $stockCode = (string)$r[0];
+            $xml .= '<row r="' . $row . '">';
+            $xml .= $strCell('A', $row, $stockCode);
+            $xml .= $strCell('B', $row, (string)$r[1]);
+            foreach (['C'=>2, 'D'=>3, 'E'=>4, 'F'=>5] as $col => $idx) {
+                if ($r[$idx] !== null && is_numeric($r[$idx])) {
+                    $xml .= '<c r="' . $col . $row . '" s="3"><v>' . number_format((float)$r[$idx], 6, '.', '') . '</v></c>';
+                }
+            }
+            $urls = [
+                'G' => ['株', 'https://kabutan.jp/stock/chart?code=' . rawurlencode($stockCode)],
+                'H' => ['季', 'https://shikiho.toyokeizai.net/stocks/' . rawurlencode($stockCode)],
+                'I' => ['銘', 'https://monex.ifis.co.jp/index.php?sa=find&ta=e&wd=' . rawurlencode($stockCode) . '&x=0&y=0'],
+                'J' => ['全', 'http://133.18.243.68/api/master_view.php?mode=api&text=' . rawurlencode($stockCode)],
+            ];
+            foreach ($urls as $col => $item) {
+                $xml .= $strCell($col, $row, $item[0], 2);
+                $rid = 'rId' . $relId++;
+                $links .= '<hyperlink ref="' . $col . $row . '" r:id="' . $rid . '"/>';
+                $rels .= '<Relationship Id="' . $rid . '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="' . $esc($item[1]) . '" TargetMode="External"/>';
+            }
+            $xml .= '</row>';
+        }
+        $xml .= '</sheetData><autoFilter ref="A1:J' . (count($results) + 1) . '"/>'
+            . '<hyperlinks>' . $links . '</hyperlinks></worksheet>';
+        $rels .= '</Relationships>';
+        $zip->addFromString('xl/worksheets/sheet1.xml', $xml);
+        $zip->addFromString('xl/worksheets/_rels/sheet1.xml.rels', $rels);
+        $closed = $zip->close();
+        $zipOpen = false;
+        if (!$closed) throw new RuntimeException('XLSXの書き込みに失敗しました。');
+        $filename = '類似チャートパターン検索_' . $code . '_' . str_replace('-', '', $start)
+            . '_' . str_replace('-', '', $end) . '_直近' . $n . '本.xlsx';
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="similar_chart.xlsx"; filename*=UTF-8\'\'' . rawurlencode($filename));
+        header('Content-Length: ' . filesize($tmp));
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        readfile($tmp);
+    } finally {
+        if ($zipOpen) $zip->close();
+        @unlink($tmp);
+    }
+}
+
+function patternPriceVector(array $rows): ?array
+{
+    $first = toFloatOrNullLocal($rows[0]['close'] ?? null);
+    if ($first === null || $first <= 0) return null;
+    $values = [];
+    foreach ($rows as $row) {
+        foreach (['open','high','low','close'] as $col) {
+            $v = toFloatOrNullLocal($row[$col] ?? null);
+            if ($v === null || $v <= 0) return null;
+            $values[] = $v / $first;
+        }
+    }
+    return $values;
+}
+
+function patternVolumeVector(array $rows): ?array
+{
+    $values = [];
+    foreach ($rows as $row) {
+        $v = toFloatOrNullLocal($row['volume'] ?? null);
+        if ($v === null || $v < 0) return null;
+        $values[] = $v;
+    }
+    $mean = array_sum($values) / count($values);
+    if ($mean <= 0) return null;
+    return array_map(static function (float $v) use ($mean): float { return $v / $mean; }, $values);
+}
+
+function patternMarginAligned(PDOStatement $stmt, string $code, array $priceRows): ?array
+{
+    if (!$priceRows) return null;
+    $firstDate = (string)$priceRows[0]['asof_date'];
+    $lastDate = (string)$priceRows[count($priceRows)-1]['asof_date'];
+    $stmt->execute([':code'=>$code, ':start'=>(new DateTimeImmutable($firstDate))->modify('-370 days')->format('Y-m-d'), ':end'=>$lastDate]);
+    $margins = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $stmt->closeCursor();
+    if (!$margins) return null;
+    $aligned = [];
+    $j = 0;
+    $last = null;
+    foreach ($priceRows as $p) {
+        $date = (string)$p['asof_date'];
+        while ($j < count($margins) && (string)$margins[$j]['data_date'] <= $date) {
+            $last = $margins[$j++];
+        }
+        if ($last === null) return null;
+        $aligned[] = $last;
+    }
+    return $aligned;
+}
+
+function patternMarginScore(?array $base, ?array $other): ?float
+{
+    if ($base === null || $other === null || count($base) !== count($other)) return null;
+    $scores = [];
+    foreach (['shrt_std_vol','long_std_vol'] as $col) {
+        $a = []; $b = [];
+        foreach ($base as $i => $row) {
+            $x = toFloatOrNullLocal($row[$col] ?? null);
+            $y = toFloatOrNullLocal($other[$i][$col] ?? null);
+            if ($x === null || $y === null || $x < 0 || $y < 0) return null;
+            $a[] = $x; $b[] = $y;
+        }
+        $meanA = array_sum($a) / count($a);
+        $meanB = array_sum($b) / count($b);
+        if ($meanA <= 0 || $meanB <= 0) return null;
+        $scores[] = patternSimilarity(array_map(static function ($v) use ($meanA) { return $v / $meanA; }, $a), array_map(static function ($v) use ($meanB) { return $v / $meanB; }, $b));
+    }
+    return array_sum($scores) / count($scores);
+}
+
+function patternSimilarity(array $reference, array $candidate): float
+{
+    if (count($reference) !== count($candidate) || !$reference) return 0.0;
+    $sum = 0.0;
+    foreach ($reference as $i => $v) {
+        $other = $candidate[$i];
+        $sum += abs($v - $other) / max(0.01, abs($v), abs($other));
+    }
+    return max(0.0, min(1.0, 1.0 - $sum / count($reference)));
+}
+
+/**
+ * 4本足の複合類似度（0～1）。
+ * 全期間30%、後半50%を20%、直近20本30%、直近5本騰落率20%。
+ * 期間が短い場合は利用可能な本数に縮小する。
+ */
+function patternWeightedPriceSimilarity(array $reference, array $candidate): float
+{
+    $count = count($reference);
+    if ($count === 0 || $count !== count($candidate) || $count % 4 !== 0) return 0.0;
+    $n = intdiv($count, 4);
+    if ($n < 3) return 0.0;
+
+    $full = patternSimilarity($reference, $candidate);
+    $halfStart = intdiv($n, 2);
+    $half = patternSimilarity(array_slice($reference, $halfStart * 4), array_slice($candidate, $halfStart * 4));
+    $last20 = min(20, $n);
+    $recent = patternSimilarity(array_slice($reference, -$last20 * 4), array_slice($candidate, -$last20 * 4));
+
+    // 終値（各日の4番目）から直近5本の日次騰落率を作成する。
+    $returnsRef = [];
+    $returnsCandidate = [];
+    $start = max(1, $n - 5);
+    for ($i = $start; $i < $n; $i++) {
+        $prevRef = (float)$reference[($i - 1) * 4 + 3];
+        $prevCandidate = (float)$candidate[($i - 1) * 4 + 3];
+        if ($prevRef <= 0 || $prevCandidate <= 0) return 0.0;
+        $returnsRef[] = (float)$reference[$i * 4 + 3] / $prevRef - 1.0;
+        $returnsCandidate[] = (float)$candidate[$i * 4 + 3] / $prevCandidate - 1.0;
+    }
+    // 日次騰落率の差を5%でスケーリング。5%ptの平均乖離で0となる。
+    $difference = 0.0;
+    foreach ($returnsRef as $i => $v) {
+        $difference += abs($v - $returnsCandidate[$i]);
+    }
+    $momentum = max(0.0, 1.0 - $difference / (count($returnsRef) * 0.05));
+    return max(0.0, min(1.0, 0.30 * $full + 0.20 * $half + 0.30 * $recent + 0.20 * $momentum));
 }
